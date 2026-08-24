@@ -499,25 +499,86 @@ func TestAssembleFactsOverCard(t *testing.T) {
 	}
 }
 
-func TestAssembleKeepsSourceOrder(t *testing.T) {
+// Список источников версии выводится из ссылок в самом срезе, а не из того, что
+// подали на разбор: в чате может быть сто сообщений, а для вывода понадобиться
+// семь. Проверяем оба пути ссылки — факты и разбор аналитика, — порядок первого
+// упоминания и то, что один источник в двух полях не удваивается.
+func TestAssembleCollectsOnlyCitedSources(t *testing.T) {
 	sources := []domain.Source{
 		{ID: "s1", Kind: domain.KindCorrespondence},
 		{ID: "s2", Kind: domain.KindAudit},
 		{ID: "s3", Kind: domain.KindNote},
+		{ID: "s4", Kind: domain.KindCorrespondence}, // ни в одном поле не упомянут
+		{ID: "s5", Kind: domain.KindSpec},
 	}
 
-	sl := assemble(domain.Task{ID: "t", Title: "Название"}, sources, nil, analyst.Output{}, 3, today, "тест")
-
-	if len(sl.SourceIDs) != len(sources) {
-		t.Fatalf("источников %d, ожидалось %d", len(sl.SourceIDs), len(sources))
+	// Паспорт заполняется фактами, остальное — разбором аналитика. Оба пути
+	// должны приводить источник в список.
+	facts := []domain.Fact{
+		{Field: "passport.author", Value: domain.Quoted("Волошук", "s2", "поставил Волошук")},
+		{Field: "passport.assignee", Value: domain.Quoted("Джонсон", "s2", "исполнитель Джонсон")},
 	}
-	for i, src := range sources {
-		if sl.SourceIDs[i] != src.ID {
-			t.Errorf("источник %d: %q, ожидался %q", i, sl.SourceIDs[i], src.ID)
+	out := analyst.Output{
+		GoalAsStated: domain.Quoted("Автоматизировать приём заявок", "s1", "нужно автоматизировать приём"),
+		Stage:        domain.Quoted("в работе", "s3", "работы идут"),
+		Processes: []domain.Process{
+			{Kind: domain.ProcessAsIs, Evidence: domain.Quoted("как есть", "s5", "заявки принимают вручную")},
+		},
+	}
+
+	sl := assemble(domain.Task{ID: "t", Title: "Название"}, sources, facts, out, 3, today, "тест")
+
+	// Порядок обхода: паспорт, цель, статус, а схемы процессов дописываются
+	// в конец. s2 назван дважды и обязан остаться одной записью.
+	want := []string{"s2", "s1", "s3", "s5"}
+	if len(sl.SourceIDs) != len(want) {
+		t.Fatalf("источников %d %v, ожидалось %d %v", len(sl.SourceIDs), sl.SourceIDs, len(want), want)
+	}
+	for i, id := range want {
+		if sl.SourceIDs[i] != id {
+			t.Errorf("источник %d: %q, ожидался %q (весь список %v)", i, sl.SourceIDs[i], id, sl.SourceIDs)
 		}
 	}
-	if sl.Version != 3 || !sl.BuiltAt.Equal(today) || sl.Analyst != "тест" {
-		t.Errorf("служебные поля собраны неверно: %+v", sl)
+
+	// В версию попадают не все источники, но пересмотрен должен быть каждый:
+	// иначе не понять, из какого объёма материала сделан вывод.
+	if sl.Considered != len(sources) {
+		t.Errorf("рассмотрено %d, ожидалось %d", sl.Considered, len(sources))
+	}
+}
+
+// Источник, поданный на разбор, но ни в одном поле не процитированный, в версию
+// не попадает: иначе список источников превратился бы в опись входа.
+func TestAssembleSkipsUncitedSources(t *testing.T) {
+	sources := []domain.Source{
+		{ID: "s1", Kind: domain.KindCorrespondence},
+		{ID: "s2", Kind: domain.KindAudit},
+	}
+
+	sl := assemble(domain.Task{ID: "t", Title: "Название"}, sources, nil, analyst.Output{}, 1, today, "тест")
+
+	if len(sl.SourceIDs) != 0 {
+		t.Errorf("источники %v, ожидался пустой список: срез ни на один из них не ссылается", sl.SourceIDs)
+	}
+	if sl.Considered != len(sources) {
+		t.Errorf("рассмотрено %d, ожидалось %d", sl.Considered, len(sources))
+	}
+}
+
+func TestAssembleSetsVersionFields(t *testing.T) {
+	sl := assemble(domain.Task{ID: "t", Title: "Название"}, nil, nil, analyst.Output{}, 3, today, "тест")
+
+	if sl.TaskID != "t" {
+		t.Errorf("задача %q, ожидалась %q", sl.TaskID, "t")
+	}
+	if sl.Version != 3 {
+		t.Errorf("версия %d, ожидалась 3", sl.Version)
+	}
+	if !sl.BuiltAt.Equal(today) {
+		t.Errorf("собран %v, ожидалось %v", sl.BuiltAt, today)
+	}
+	if sl.Analyst != "тест" {
+		t.Errorf("аналитик %q, ожидался %q", sl.Analyst, "тест")
 	}
 }
 

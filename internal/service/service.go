@@ -111,6 +111,7 @@ func (s *Service) Sources(ctx context.Context, taskID string) ([]domain.Source, 
 // прочитать.
 func (s *Service) AddSource(ctx context.Context, src domain.Source) (domain.Source, error) {
 	src.Title = strings.TrimSpace(src.Title)
+	src.Author = strings.TrimSpace(src.Author)
 	if strings.TrimSpace(src.Body) == "" {
 		return domain.Source{}, fmt.Errorf("текст источника пустой: %w", ErrInvalid)
 	}
@@ -127,11 +128,33 @@ func (s *Service) AddSource(ctx context.Context, src domain.Source) (domain.Sour
 		src.UploadedAt = s.now()
 	}
 
+	// OccurredAt намеренно не подставляется из UploadedAt. Неизвестная дата
+	// события — это значение: срез должен сказать «когда это было, неизвестно»,
+	// а не выдать день загрузки за день разговора.
+
+	if src.ParentID != "" {
+		if _, err := s.store.Source(ctx, src.ParentID); err != nil {
+			return domain.Source{}, fmt.Errorf("источник-родитель %s: %w", src.ParentID, err)
+		}
+	}
+
 	if err := s.store.AddSource(ctx, src); err != nil {
 		return domain.Source{}, err
 	}
-	s.log.Info("источник загружен", "задача", src.TaskID, "источник", src.ID, "знаков", src.Size())
+	s.log.Info("источник загружен",
+		"задача", src.TaskID, "источник", src.ID, "вид", src.Kind, "знаков", src.Size())
 	return src, nil
+}
+
+// SourceUsage возвращает версии срезов, которые опираются на источник.
+//
+// Нужно, чтобы загруженный материал не был односторонней записью в журнале: PM
+// вправе спросить, куда пошёл кусок переписки и на что он повлиял.
+func (s *Service) SourceUsage(ctx context.Context, sourceID string) ([]domain.SliceRef, error) {
+	if _, err := s.store.Source(ctx, sourceID); err != nil {
+		return nil, err
+	}
+	return s.store.SlicesUsing(ctx, sourceID)
 }
 
 // Slice возвращает последний собранный срез, а если его ещё нет — собирает.
@@ -277,9 +300,24 @@ func assemble(
 	}
 
 	sl.Passport.Shifts = out.Shifts
-	for _, src := range sources {
-		sl.SourceIDs = append(sl.SourceIDs, src.ID)
+
+	// Источники версии — только те, на которые срез действительно ссылается.
+	// Схемы процессов живут рядом со срезом, но опираются на тот же материал,
+	// поэтому их основания учитываются здесь же: иначе аудит, из которого
+	// нарисована схема «как есть», не попал бы в список ни одной версии.
+	used := sl.UsedSources()
+	seen := make(map[string]bool, len(used))
+	for _, id := range used {
+		seen[id] = true
 	}
+	for _, p := range out.Processes {
+		if id := p.Evidence.SourceID; id != "" && !seen[id] {
+			seen[id] = true
+			used = append(used, id)
+		}
+	}
+	sl.SourceIDs = used
+	sl.Considered = len(sources)
 	return sl
 }
 

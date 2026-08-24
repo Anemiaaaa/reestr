@@ -163,14 +163,27 @@ func (s *Store) Tasks(_ context.Context) ([]domain.Task, error) {
 	return out, nil
 }
 
-// AddSource добавляет источник к задаче.
+// AddSource добавляет источник. Источник без задачи допустим: это общая
+// сводка, фрагменты из которой ссылаются на неё через ParentID.
 func (s *Store) AddSource(ctx context.Context, src domain.Source) error {
-	if _, err := s.Task(ctx, src.TaskID); err != nil {
-		return err
+	// Задача проверяется до взятия блокировки: Task берёт её сам, а повторный
+	// захват того же мьютекса — это тупик.
+	if src.TaskID != "" {
+		if _, err := s.Task(ctx, src.TaskID); err != nil {
+			return err
+		}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if key := src.External.Key(); key != "" {
+		for _, existing := range s.st.Sources {
+			if existing.External.Key() == key {
+				return fmt.Errorf("источник %s: %w", key, store.ErrExists)
+			}
+		}
+	}
 
 	s.st.Sources = append(s.st.Sources, src)
 	return s.persist()
@@ -200,6 +213,51 @@ func (s *Store) Sources(_ context.Context, taskID string) ([]domain.Source, erro
 			out = append(out, src)
 		}
 	}
+	return out, nil
+}
+
+// SourceByExternal возвращает источник по адресу оригинала во внешней системе.
+func (s *Store) SourceByExternal(_ context.Context, key string) (domain.Source, error) {
+	if key == "" {
+		return domain.Source{}, fmt.Errorf("внешний адрес пуст: %w", store.ErrNotFound)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, src := range s.st.Sources {
+		if src.External.Key() == key {
+			return src, nil
+		}
+	}
+	return domain.Source{}, fmt.Errorf("источник %s: %w", key, store.ErrNotFound)
+}
+
+// SlicesUsing возвращает версии срезов, ссылающиеся на источник, от старых к
+// свежим.
+func (s *Store) SlicesUsing(_ context.Context, sourceID string) ([]domain.SliceRef, error) {
+	if sourceID == "" {
+		return nil, nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []domain.SliceRef
+	for _, sl := range s.st.Slices {
+		for _, id := range sl.SourceIDs {
+			if id == sourceID {
+				out = append(out, sl.Ref())
+				break
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].TaskID != out[j].TaskID {
+			return out[i].TaskID < out[j].TaskID
+		}
+		return out[i].Version < out[j].Version
+	})
 	return out, nil
 }
 

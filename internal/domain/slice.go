@@ -86,13 +86,76 @@ type Slice struct {
 	Questions []Question `json:"questions,omitempty"`
 	Artifacts []Artifact `json:"artifacts,omitempty"`
 
-	// SourceIDs — источники, по которым собран этот срез. Нужны, чтобы читатель
-	// видел не только выводы, но и то, на каком материале они сделаны.
+	// SourceIDs — источники, на которые срез ссылается хотя бы в одном поле.
+	//
+	// Именно использованные, а не все поданные. В чате сто сообщений, для
+	// вывода понадобилось семь — в версии остаются эти семь. Список
+	// фиксируется в момент сборки и потом не меняется: старая версия обязана
+	// объясняться тем материалом, который был у неё на руках, иначе история
+	// начнёт зависеть от того, что загрузили позже.
 	SourceIDs []string `json:"sourceIds,omitempty"`
+
+	// Considered — сколько материала подали аналитику при этой сборке.
+	// Вместе с len(SourceIDs) отвечает на вопрос «сто сообщений прочитано,
+	// семь пригодились»: без этого числа отбор не виден.
+	Considered int `json:"considered,omitempty"`
 
 	// Analyst — кто извлекал факты: ручная разметка или модель. Пока модели нет,
 	// поле честно говорит «manual».
 	Analyst string `json:"analyst,omitempty"`
+}
+
+// SliceRef — версия среза без содержимого: строка в списке истории.
+type SliceRef struct {
+	TaskID  string    `json:"taskId"`
+	Version int       `json:"version"`
+	BuiltAt time.Time `json:"builtAt"`
+}
+
+// Ref возвращает ссылку на эту версию.
+func (s Slice) Ref() SliceRef {
+	return SliceRef{TaskID: s.TaskID, Version: s.Version, BuiltAt: s.BuiltAt}
+}
+
+// UsedSources возвращает идентификаторы источников, на которые в срезе есть
+// хотя бы одна ссылка, в порядке первого упоминания.
+//
+// Список выводится из самого среза, а не берётся со слов аналитика. Сказать «я
+// использовал эти сообщения» дёшево; сослаться на них в конкретном поле — нет.
+// Поэтому в версии остаются только те источники, которые действительно
+// что-то подтверждают, и модель не может расширить список, не процитировав.
+func (s Slice) UsedSources() []string {
+	seen := make(map[string]bool)
+	var out []string
+
+	add := func(vs ...Value) {
+		for _, v := range vs {
+			if v.SourceID == "" || seen[v.SourceID] {
+				continue
+			}
+			seen[v.SourceID] = true
+			out = append(out, v.SourceID)
+		}
+	}
+
+	add(s.Passport.Title, s.Passport.Author, s.Passport.Assignee,
+		s.Passport.OpenedAt, s.Passport.Deadline)
+	add(s.Goal.AsStated, s.Goal.Clarified)
+	add(s.Goal.OutOfScope...)
+	add(s.Status.Stage, s.Status.Readiness)
+	add(s.Status.Done...)
+	add(s.Status.Left...)
+	for _, b := range s.Blockers {
+		add(b.Evidence)
+	}
+	for _, r := range s.Risks {
+		add(r.Evidence)
+	}
+	add(s.PMActions.NextCheck)
+	for _, q := range s.Questions {
+		add(q.Answer)
+	}
+	return out
 }
 
 // OpenQuestions возвращает вопросы, на которые ответа в источниках нет.
