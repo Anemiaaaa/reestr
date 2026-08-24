@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Реестр задач</title>
+<!-- Значок вписан прямо в разметку: иначе браузер просит /favicon.ico на каждой
+     загрузке и получает 404 — мусор и в консоли, и в логе сервера. -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23191919'/><rect x='4' y='4.2' width='8' height='1.6' rx='.8' fill='%23fff'/><rect x='4' y='7.2' width='8' height='1.6' rx='.8' fill='%23fff'/><rect x='4' y='10.2' width='4.6' height='1.6' rx='.8' fill='%23fff'/></svg>">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="side__head">
+      <div class="side__title">Реестр</div>
+      <div class="side__sub" id="analyst">—</div>
+    </div>
+    <nav class="side__list" id="tasks"></nav>
+    <div class="side__foot">
+      <button class="btn btn--wide" id="add-task">Новая задача</button>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    <div class="empty">Загрузка…</div>
+  </main>
+</div>
+
+<dialog class="modal" id="modal">
+  <form class="modal__box" id="modal-form" method="dialog">
+    <div class="modal__head" id="modal-title">Заголовок</div>
+    <div class="modal__body" id="modal-body"></div>
+    <div class="modal__foot">
+      <button class="btn" value="cancel" formnovalidate>Отмена</button>
+      <button class="btn btn--primary" id="modal-ok" value="ok">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

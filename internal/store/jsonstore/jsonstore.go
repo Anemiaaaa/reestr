@@ -1,0 +1,302 @@
+// Package jsonstore хранит реестр в одном JSON-файле.
+//
+// Выбор осознанный: на этом этапе важнее, чтобы сервис запускался одной
+// командой и данные можно было открыть текстовым редактором, чем чтобы он
+// держал нагрузку. Всё состояние живёт в памяти под мьютексом, файл — способ
+// пережить перезапуск.
+//
+// Когда файла станет мало, рядом появится store/sqlite или store/postgres:
+// сервис знает только интерфейс store.Store и разницы не заметит.
+package jsonstore
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"sync"
+	"time"
+
+	"github.com/Anemiaaaa/reestr/internal/domain"
+	"github.com/Anemiaaaa/reestr/internal/store"
+)
+
+// Store реализует store.Store. Проверка на этапе компиляции: если интерфейс
+// разойдётся с реализацией, сборка упадёт здесь, а не в сервисе.
+var _ store.Store = (*Store)(nil)
+
+// state — то, что попадает в файл.
+type state struct {
+	Tasks     []domain.Task    `json:"tasks"`
+	Sources   []domain.Source  `json:"sources"`
+	Facts     []domain.Fact    `json:"facts"`
+	Processes []domain.Process `json:"processes"`
+	Slices    []domain.Slice   `json:"slices"`
+}
+
+// Store — хранилище реестра в JSON-файле.
+type Store struct {
+	path string
+
+	mu sync.RWMutex
+	st state
+}
+
+// Open открывает хранилище по пути к файлу, создавая его при необходимости.
+func Open(path string) (*Store, error) {
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("каталог данных: %w", err)
+		}
+	}
+
+	s := &Store{path: path}
+
+	data, err := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(err):
+		return s, nil // пустой реестр, файл появится при первой записи
+	case err != nil:
+		return nil, fmt.Errorf("чтение %s: %w", path, err)
+	}
+	if len(data) == 0 {
+		return s, nil
+	}
+	if err := json.Unmarshal(data, &s.st); err != nil {
+		return nil, fmt.Errorf("разбор %s: %w", path, err)
+	}
+	return s, nil
+}
+
+// Empty сообщает, пуст ли реестр. Нужно, чтобы при первом запуске положить
+// демонстрационные данные и не затирать ими работу при следующем.
+func (s *Store) Empty() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.st.Tasks) == 0
+}
+
+// persist пишет состояние на диск. Вызывается под удержанной блокировкой
+// записи.
+//
+// Запись идёт во временный файл и затем переименованием: так прерванный
+// процесс оставит прежний файл целым, а не половину нового.
+func (s *Store) persist() error {
+	data, err := json.MarshalIndent(s.st, "", "  ")
+	if err != nil {
+		return fmt.Errorf("сериализация состояния: %w", err)
+	}
+
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("запись %s: %w", tmp, err)
+	}
+	if err := replace(tmp, s.path); err != nil {
+		return fmt.Errorf("замена %s: %w", s.path, err)
+	}
+	return nil
+}
+
+// replace подменяет целевой файл временным, повторяя попытку при отказе.
+//
+// На Windows переименование поверх существующего файла упирается в сторонние
+// процессы: антивирус и индексатор держат только что записанный файл первые
+// миллисекунды, и os.Rename возвращает «Access is denied». Отказ временный,
+// поэтому здесь пауза и повтор — иначе чужое сканирование роняет сервер на
+// старте, посреди заполнения хранилища.
+func replace(tmp, path string) error {
+	const attempts = 10
+
+	var err error
+	for i := range attempts {
+		if err = os.Rename(tmp, path); err == nil {
+			return nil
+		}
+		// Временного файла нет — это ошибка в коде, и повтор её не вылечит.
+		if errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		time.Sleep(time.Duration(i+1) * 10 * time.Millisecond)
+	}
+	return err
+}
+
+// CreateTask сохраняет новую задачу.
+func (s *Store) CreateTask(_ context.Context, t domain.Task) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, existing := range s.st.Tasks {
+		if existing.ID == t.ID {
+			return fmt.Errorf("задача %s: %w", t.ID, store.ErrExists)
+		}
+	}
+	s.st.Tasks = append(s.st.Tasks, t)
+	return s.persist()
+}
+
+// Task возвращает задачу по идентификатору.
+func (s *Store) Task(_ context.Context, id string) (domain.Task, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, t := range s.st.Tasks {
+		if t.ID == id {
+			return t, nil
+		}
+	}
+	return domain.Task{}, fmt.Errorf("задача %s: %w", id, store.ErrNotFound)
+}
+
+// Tasks возвращает все задачи, свежие первыми.
+func (s *Store) Tasks(_ context.Context) ([]domain.Task, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]domain.Task, len(s.st.Tasks))
+	copy(out, s.st.Tasks)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].OpenedAt.After(out[j].OpenedAt) })
+	return out, nil
+}
+
+// AddSource добавляет источник к задаче.
+func (s *Store) AddSource(ctx context.Context, src domain.Source) error {
+	if _, err := s.Task(ctx, src.TaskID); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.st.Sources = append(s.st.Sources, src)
+	return s.persist()
+}
+
+// Source возвращает источник по идентификатору.
+func (s *Store) Source(_ context.Context, id string) (domain.Source, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, src := range s.st.Sources {
+		if src.ID == id {
+			return src, nil
+		}
+	}
+	return domain.Source{}, fmt.Errorf("источник %s: %w", id, store.ErrNotFound)
+}
+
+// Sources возвращает источники задачи в порядке загрузки.
+func (s *Store) Sources(_ context.Context, taskID string) ([]domain.Source, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []domain.Source
+	for _, src := range s.st.Sources {
+		if src.TaskID == taskID {
+			out = append(out, src)
+		}
+	}
+	return out, nil
+}
+
+// AddFacts добавляет извлечённые факты.
+func (s *Store) AddFacts(_ context.Context, facts []domain.Fact) error {
+	if len(facts) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.st.Facts = append(s.st.Facts, facts...)
+	return s.persist()
+}
+
+// Facts возвращает факты задачи в порядке добавления.
+func (s *Store) Facts(_ context.Context, taskID string) ([]domain.Fact, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []domain.Fact
+	for _, f := range s.st.Facts {
+		if f.TaskID == taskID {
+			out = append(out, f)
+		}
+	}
+	return out, nil
+}
+
+// PutProcess сохраняет схему процесса, заменяя прежнюю схему того же вида.
+func (s *Store) PutProcess(_ context.Context, p domain.Process) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, existing := range s.st.Processes {
+		if existing.TaskID == p.TaskID && existing.Kind == p.Kind {
+			s.st.Processes[i] = p
+			return s.persist()
+		}
+	}
+	s.st.Processes = append(s.st.Processes, p)
+	return s.persist()
+}
+
+// Processes возвращает схемы задачи: сначала «как есть», затем «как будет».
+func (s *Store) Processes(_ context.Context, taskID string) ([]domain.Process, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []domain.Process
+	for _, p := range s.st.Processes {
+		if p.TaskID == taskID {
+			out = append(out, p)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Kind == domain.ProcessAsIs })
+	return out, nil
+}
+
+// SaveSlice сохраняет собранный срез как очередную версию.
+func (s *Store) SaveSlice(_ context.Context, sl domain.Slice) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.st.Slices = append(s.st.Slices, sl)
+	return s.persist()
+}
+
+// LatestSlice возвращает последнюю собранную версию среза.
+func (s *Store) LatestSlice(_ context.Context, taskID string) (domain.Slice, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var latest domain.Slice
+	found := false
+	for _, sl := range s.st.Slices {
+		if sl.TaskID == taskID && (!found || sl.Version > latest.Version) {
+			latest, found = sl, true
+		}
+	}
+	if !found {
+		return domain.Slice{}, fmt.Errorf("срез задачи %s: %w", taskID, store.ErrNotFound)
+	}
+	return latest, nil
+}
+
+// NextSliceVersion возвращает номер, который получит следующая сборка.
+func (s *Store) NextSliceVersion(_ context.Context, taskID string) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	max := 0
+	for _, sl := range s.st.Slices {
+		if sl.TaskID == taskID && sl.Version > max {
+			max = sl.Version
+		}
+	}
+	return max + 1, nil
+}

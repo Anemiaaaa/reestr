@@ -1,0 +1,14 @@
+# сборка
+/bin/
+/reestr
+/reestr.exe
+
+# локальные данные реестра
+/data/
+
+# GoLand
+/.idea/
+
+# ОС
+.DS_Store
+Thumbs.db
