@@ -74,10 +74,14 @@ func Open(path string) (*Store, error) {
 
 // Empty сообщает, пуст ли реестр. Нужно, чтобы при первом запуске положить
 // демонстрационные данные и не затирать ими работу при следующем.
-func (s *Store) Empty() bool {
+//
+// Ошибку не возвращает никогда: состояние уже в памяти. Она есть в сигнатуре
+// потому, что у хранилища в базе тот же вопрос требует запроса, а разные
+// сигнатуры сделали бы интерфейс невыполнимым для одной из реализаций.
+func (s *Store) Empty(_ context.Context) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.st.Tasks) == 0
+	return len(s.st.Tasks) == 0, nil
 }
 
 // persist пишет состояние на диск. Вызывается под удержанной блокировкой
@@ -202,7 +206,13 @@ func (s *Store) Source(_ context.Context, id string) (domain.Source, error) {
 	return domain.Source{}, fmt.Errorf("источник %s: %w", id, store.ErrNotFound)
 }
 
-// Sources возвращает источники задачи в порядке загрузки.
+// Sources возвращает источники задачи хроникой: по дате материала, а при равных
+// датах — в порядке поступления. Материал без даты идёт первым: его дату ещё
+// предстоит выяснить, а внизу списка, среди свежего, он выглядел бы как самое
+// позднее событие.
+//
+// Порядок поступления сохраняет SliceStable: в файле источники лежат в том
+// порядке, в каком их добавляли, и для равных дат сортировка его не тронет.
 func (s *Store) Sources(_ context.Context, taskID string) ([]domain.Source, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -213,6 +223,7 @@ func (s *Store) Sources(_ context.Context, taskID string) ([]domain.Source, erro
 			out = append(out, src)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].UploadedAt.Before(out[j].UploadedAt) })
 	return out, nil
 }
 
@@ -261,10 +272,26 @@ func (s *Store) SlicesUsing(_ context.Context, sourceID string) ([]domain.SliceR
 	return out, nil
 }
 
-// AddFacts добавляет извлечённые факты.
-func (s *Store) AddFacts(_ context.Context, facts []domain.Fact) error {
+// AddFacts добавляет извлечённые факты. Задача должна существовать: факт без
+// задачи — запись, к которой ни один срез не обратится.
+func (s *Store) AddFacts(ctx context.Context, facts []domain.Fact) error {
 	if len(facts) == 0 {
 		return nil
+	}
+
+	// Задачи проверяются до взятия блокировки: Task берёт её сам, а повторный
+	// захват того же мьютекса — это тупик. Проверка до вставки, а не после, ещё
+	// и потому, что набор фактов — результат одного разбора: половина разбора в
+	// хранилище хуже, чем ни одного.
+	seen := make(map[string]bool, len(facts))
+	for _, f := range facts {
+		if seen[f.TaskID] {
+			continue
+		}
+		if _, err := s.Task(ctx, f.TaskID); err != nil {
+			return err
+		}
+		seen[f.TaskID] = true
 	}
 
 	s.mu.Lock()
@@ -289,7 +316,11 @@ func (s *Store) Facts(_ context.Context, taskID string) ([]domain.Fact, error) {
 }
 
 // PutProcess сохраняет схему процесса, заменяя прежнюю схему того же вида.
-func (s *Store) PutProcess(_ context.Context, p domain.Process) error {
+func (s *Store) PutProcess(ctx context.Context, p domain.Process) error {
+	if _, err := s.Task(ctx, p.TaskID); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -314,14 +345,33 @@ func (s *Store) Processes(_ context.Context, taskID string) ([]domain.Process, e
 			out = append(out, p)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Kind == domain.ProcessAsIs })
+	// Сравнение обязано быть строгим: «как есть» меньше всего остального, но не
+	// меньше самой себя. Без второго условия две схемы «как есть» оказались бы
+	// меньше друг друга, а на противоречивом сравнении sort вправе выдать любой
+	// порядок.
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].Kind == domain.ProcessAsIs && out[j].Kind != domain.ProcessAsIs
+	})
 	return out, nil
 }
 
 // SaveSlice сохраняет собранный срез как очередную версию.
-func (s *Store) SaveSlice(_ context.Context, sl domain.Slice) error {
+func (s *Store) SaveSlice(ctx context.Context, sl domain.Slice) error {
+	if _, err := s.Task(ctx, sl.TaskID); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Версия с таким номером не переписывается. Срез самодостаточен: его читают
+	// как свидетельство о том, что было известно на момент сборки, и подмена
+	// версии задним числом обессмыслила бы сравнение «было → стало».
+	for _, existing := range s.st.Slices {
+		if existing.TaskID == sl.TaskID && existing.Version == sl.Version {
+			return fmt.Errorf("срез задачи %s версии %d: %w", sl.TaskID, sl.Version, store.ErrExists)
+		}
+	}
 
 	s.st.Slices = append(s.st.Slices, sl)
 	return s.persist()

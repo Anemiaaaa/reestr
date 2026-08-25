@@ -1,7 +1,9 @@
 // Команда reestr поднимает локальный сервер реестра задач.
 //
-// Всё состояние — один JSON-файл, интерфейс вложен в бинарник: инструмент
-// запускается одной командой и не требует ни базы, ни сборки фронтенда.
+// Хранилище выбирается настройкой DATABASE_URL: с ней — PostgreSQL, без неё —
+// один JSON-файл. Второй путь оставлен намеренно: инструмент должен запускаться
+// одной командой на чужой машине, где базы нет, — иначе показать его нельзя.
+// Интерфейс вложен в бинарник, поэтому сборки фронтенда тоже не требуется.
 package main
 
 import (
@@ -19,9 +21,12 @@ import (
 	"time"
 
 	"github.com/Anemiaaaa/reestr/internal/analyst/manual"
+	"github.com/Anemiaaaa/reestr/internal/config"
 	"github.com/Anemiaaaa/reestr/internal/httpapi"
 	"github.com/Anemiaaaa/reestr/internal/service"
+	"github.com/Anemiaaaa/reestr/internal/store"
 	"github.com/Anemiaaaa/reestr/internal/store/jsonstore"
+	"github.com/Anemiaaaa/reestr/internal/store/pgstore"
 	"github.com/Anemiaaaa/reestr/web"
 )
 
@@ -33,12 +38,23 @@ func main() {
 }
 
 func run() error {
+	// Настройки читаются до разбора флагов: значения из .env становятся
+	// значениями по умолчанию, а флаг остаётся способом перебить их на один
+	// запуск.
+	if err := config.Load(".env"); err != nil {
+		return err
+	}
+
 	var (
-		// Адрес по умолчанию — только петля, а не все интерфейсы. В файле лежит
+		// Адрес по умолчанию — только петля, а не все интерфейсы. В реестре лежит
 		// аудит реального заказчика с оборотами и сметой; такое не выставляют в
 		// сеть по невнимательности.
-		addr = flag.String("addr", "127.0.0.1:8080", "адрес, на котором слушать")
-		data = flag.String("data", filepath.Join("data", "reestr.json"), "файл с данными")
+		addr = flag.String("addr", config.Env("REESTR_ADDR", "127.0.0.1:8080"),
+			"адрес, на котором слушать")
+		dsn = flag.String("db", config.Env("DATABASE_URL", ""),
+			"строка подключения к PostgreSQL; пусто — работать на файле")
+		data = flag.String("data", filepath.Join("data", "reestr.json"),
+			"файл с данными, если база не задана")
 		// Каталог с интерфейсом вместо вложенного в бинарник: правку в css видно
 		// после обновления страницы, без пересборки.
 		dir     = flag.String("web", "", "каталог с интерфейсом вместо вложенного")
@@ -54,20 +70,22 @@ func run() error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(log)
 
-	if err := os.MkdirAll(filepath.Dir(*data), 0o755); err != nil {
-		return fmt.Errorf("каталог для данных: %w", err)
-	}
-	st, err := jsonstore.Open(*data)
-	if err != nil {
-		return fmt.Errorf("хранилище %s: %w", *data, err)
-	}
-
-	svc := service.New(st, manual.New(), log)
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if *seed && st.Empty() {
+	st, where, closeStore, err := openStore(ctx, *dsn, *data)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+
+	svc := service.New(st, manual.New(), log)
+
+	empty, err := st.Empty(ctx)
+	if err != nil {
+		return err
+	}
+	if *seed && empty {
 		if err := fill(ctx, st, svc, log); err != nil {
 			return fmt.Errorf("заполнение хранилища: %w", err)
 		}
@@ -89,7 +107,7 @@ func run() error {
 
 	errc := make(chan error, 1)
 	go func() {
-		log.Info("сервер запущен", "адрес", "http://"+*addr, "данные", *data)
+		log.Info("сервер запущен", "адрес", "http://"+*addr, "хранилище", where)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errc <- err
 			return
@@ -113,6 +131,28 @@ func run() error {
 	return <-errc
 }
 
+// openStore открывает хранилище: базу, если задана строка подключения, иначе
+// файл. Возвращает ещё и описание для лога — по нему при разборе жалобы сразу
+// видно, где лежали данные.
+func openStore(ctx context.Context, dsn, data string) (store.Store, string, func(), error) {
+	if dsn != "" {
+		st, err := pgstore.Open(ctx, dsn)
+		if err != nil {
+			return nil, "", nil, fmt.Errorf("хранилище в базе: %w", err)
+		}
+		return st, "postgresql", st.Close, nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(data), 0o755); err != nil {
+		return nil, "", nil, fmt.Errorf("каталог для данных: %w", err)
+	}
+	st, err := jsonstore.Open(data)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("хранилище %s: %w", data, err)
+	}
+	return st, data, func() {}, nil
+}
+
 // ui выбирает, откуда брать файлы интерфейса.
 func ui(dir string) (fs.FS, error) {
 	if dir == "" {
@@ -131,7 +171,7 @@ func ui(dir string) (fs.FS, error) {
 // подставляет значения по умолчанию — в том числе дату постановки, если её нет,
 // — а в этой задаче её и нет: в переписке она не названа, и это один из пробелов
 // среза. Пусть остаётся пробелом, а не превращается в сегодняшнее число.
-func fill(ctx context.Context, st *jsonstore.Store, svc *service.Service, log *slog.Logger) error {
+func fill(ctx context.Context, st store.Store, svc *service.Service, log *slog.Logger) error {
 	task, sources := manual.Seed()
 
 	if err := st.CreateTask(ctx, task); err != nil {

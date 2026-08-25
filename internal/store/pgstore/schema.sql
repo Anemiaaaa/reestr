@@ -1,0 +1,165 @@
+-- Схема реестра.
+--
+-- Файл применяется целиком при каждом запуске: все выражения idempotent, и
+-- отдельный инструмент миграций пока не нужен. Когда схема начнёт меняться на
+-- живых данных, здесь появится нумерация версий — но не правки задним числом.
+--
+-- Правило по датам во всей схеме: нулевое время в Go — это NULL, а не
+-- «01.01.0001». Пустая дата означает «поле не заполнено», и срез обязан
+-- отличать её от заполненной, иначе в отчёте появится выдуманное число.
+
+CREATE TABLE IF NOT EXISTS tasks (
+    -- Порядок появления задач в реестре. Нужен только как устойчивый признак
+    -- при равных датах: две задачи, открытые одним днём, обязаны выводиться в
+    -- одном и том же порядке от запроса к запросу.
+    seq bigserial NOT NULL,
+
+    id        text PRIMARY KEY,
+    project   text NOT NULL DEFAULT '',
+    title     text NOT NULL,
+    author    text NOT NULL DEFAULT '', -- постановщик
+    assignee  text NOT NULL DEFAULT '', -- ответственный специалист
+    opened_at timestamptz,
+    deadline  timestamptz,
+    budget    bigint NOT NULL DEFAULT 0 -- согласованная смета, ₽
+);
+
+-- Список задач всегда выводится свежими сверху.
+CREATE INDEX IF NOT EXISTS tasks_opened_at_idx ON tasks (opened_at DESC NULLS LAST, seq);
+
+-- Источники — журнал только на добавление. Материал, однажды принятый в
+-- реестр, не правится и не удаляется: срез из него выводится, поэтому правка
+-- источника задним числом переписала бы уже собранные версии.
+CREATE TABLE IF NOT EXISTS sources (
+    -- Порядок попадания в реестр. Как и у задач, нужен вторым признаком при
+    -- равных датах: у сообщений одного дня время в чате часто одинаковое, а
+    -- список источников не должен перетасовываться от запроса к запросу.
+    seq bigserial NOT NULL,
+
+    id text PRIMARY KEY,
+
+    -- Пусто, а не NULL: общий источник. Сводка с капитанского мостика говорит
+    -- сразу о нескольких задачах, и привязать её к одной значит потерять
+    -- остальные. Внешнего ключа на tasks здесь нет намеренно — он запретил бы
+    -- пустое значение; существование задачи проверяется при вставке.
+    task_id text NOT NULL DEFAULT '',
+
+    -- Источник, из которого выделен этот фрагмент. Шов под будущий
+    -- автоматический разбор мостика: сегодня фрагмент вырезает PM, завтра —
+    -- разбор, а записи получаются одинаковые.
+    parent_id text NOT NULL DEFAULT '',
+
+    kind  text NOT NULL,
+    title text NOT NULL DEFAULT '',
+    body  text NOT NULL DEFAULT '',
+
+    author      text NOT NULL DEFAULT '',
+    occurred_at timestamptz, -- дата события в материале
+    uploaded_at timestamptz, -- дата попадания в реестр
+
+    ext_system  text NOT NULL DEFAULT '',
+    ext_chat_id text NOT NULL DEFAULT '',
+    ext_msg_id  text NOT NULL DEFAULT '',
+    ext_url     text NOT NULL DEFAULT '',
+
+    -- Ключ оригинала вида «система:чат:сообщение». Приходит из Go готовым, а не
+    -- собирается выражением в базе: правило склейки живёт в ExternalRef.Key() и
+    -- должно быть в одном месте. Иначе повторная подтяжка чата начнёт зависеть
+    -- от того, кто считал ключ — приложение или база.
+    ext_key text NOT NULL DEFAULT ''
+);
+
+-- Повторная подтяжка того же сообщения не должна создавать второй источник.
+-- Индекс частичный: у материала, вставленного руками, ключа нет вообще.
+CREATE UNIQUE INDEX IF NOT EXISTS sources_ext_key_idx ON sources (ext_key) WHERE ext_key <> '';
+-- Источники задачи выводятся хроникой: сначала по дате, затем по порядку
+-- поступления. NULLS FIRST, потому что незаполненная дата — это NULL, а
+-- нулевое время в Go (01.01.0001) раньше любого события: материал без даты
+-- показывается первым, а не приписывается к сегодняшнему дню.
+CREATE INDEX IF NOT EXISTS sources_task_idx ON sources (task_id, uploaded_at NULLS FIRST, seq);
+
+-- Факты — тоже журнал только на добавление: извлечённое значение с указанием,
+-- откуда оно взято.
+CREATE TABLE IF NOT EXISTS facts (
+    -- Порядок извлечения. Факты читаются в нём же: последовательность разбора
+    -- сама по себе информация.
+    seq bigserial PRIMARY KEY,
+
+    -- Не уникален намеренно: это журнал, а идентификатор здесь — метка записи,
+    -- а не ключ. Ограничение уникальности сделало бы pgstore строже файлового
+    -- хранилища, и один и тот же код вёл бы себя по-разному на двух бэкендах.
+    id text NOT NULL,
+
+    task_id text NOT NULL REFERENCES tasks (id),
+    field   text NOT NULL, -- адрес значения в срезе, например passport.deadline
+
+    -- Значение с провенансом целиком: текст, происхождение, источник, цитата,
+    -- пояснение. Одним объектом, потому что читается и пишется всегда целиком,
+    -- а по отдельным его частям не ищут.
+    value jsonb NOT NULL,
+
+    confidence  double precision NOT NULL DEFAULT 0,
+    observed_at timestamptz, -- дата события в источнике
+    created_at  timestamptz  -- дата извлечения
+);
+
+CREATE INDEX IF NOT EXISTS facts_task_idx ON facts (task_id, seq);
+
+-- Схемы процессов: как есть и как должно быть. У задачи не может быть двух
+-- схем одного вида — новая заменяет прежнюю, поэтому вид входит в ключ.
+CREATE TABLE IF NOT EXISTS processes (
+    task_id text NOT NULL REFERENCES tasks (id),
+    kind    text NOT NULL, -- as_is либо to_be
+    title   text NOT NULL DEFAULT '',
+
+    -- Узлы, связи и отличия — граф. Читается и рисуется целиком, по отдельным
+    -- узлам не ищут, поэтому в таблицы не разворачивается.
+    nodes   jsonb NOT NULL DEFAULT '[]',
+    edges   jsonb NOT NULL DEFAULT '[]',
+    changes jsonb NOT NULL DEFAULT '[]',
+
+    -- На чём построена схема. Схема без ссылки на источник — рисунок, а не вывод.
+    evidence jsonb NOT NULL DEFAULT '{}',
+
+    PRIMARY KEY (task_id, kind)
+);
+
+CREATE TABLE IF NOT EXISTS slices (
+    task_id text NOT NULL REFERENCES tasks (id),
+    version int NOT NULL,
+
+    -- Версия целиком, ровно в том виде, в каком её собрали. Срез обязан быть
+    -- самодостаточным: он объясняется тем материалом, который был на руках в
+    -- момент сборки, и не должен меняться ни от того, что загрузили позже, ни
+    -- от того, как позже переписали схему таблиц.
+    doc jsonb NOT NULL,
+
+    -- Те же данные плоскими полями — чтобы список версий и сравнение строились
+    -- запросом, без разбора JSON на каждую строку.
+    built_at   timestamptz,
+    stage      text NOT NULL DEFAULT '',
+    readiness  text NOT NULL DEFAULT '',
+    analyst    text NOT NULL DEFAULT '', -- кто извлекал факты: manual либо модель
+    considered int NOT NULL DEFAULT 0,   -- сколько материала подали на разбор
+
+    PRIMARY KEY (task_id, version)
+);
+
+-- Источники, на которые версия действительно ссылается. Дублируют список
+-- внутри doc намеренно: doc — сама версия, а эта таблица — указатель для
+-- обратного вопроса «в каких срезах участвовал источник». Пишутся в одной
+-- транзакции с версией.
+CREATE TABLE IF NOT EXISTS slice_sources (
+    task_id   text NOT NULL,
+    version   int NOT NULL,
+    source_id text NOT NULL,
+
+    -- Порядок первого упоминания в срезе: сначала паспорт, потом цель, потом
+    -- статус. Порядок осмысленный, и терять его при чтении нельзя.
+    ord int NOT NULL,
+
+    PRIMARY KEY (task_id, version, source_id),
+    FOREIGN KEY (task_id, version) REFERENCES slices (task_id, version) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS slice_sources_source_idx ON slice_sources (source_id);
