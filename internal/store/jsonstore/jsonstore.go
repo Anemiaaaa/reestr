@@ -31,11 +31,12 @@ var _ store.Store = (*Store)(nil)
 
 // state — то, что попадает в файл.
 type state struct {
-	Tasks     []domain.Task    `json:"tasks"`
-	Sources   []domain.Source  `json:"sources"`
-	Facts     []domain.Fact    `json:"facts"`
-	Processes []domain.Process `json:"processes"`
-	Slices    []domain.Slice   `json:"slices"`
+	Tasks     []domain.Task     `json:"tasks"`
+	ChatLinks []domain.ChatLink `json:"chatLinks"`
+	Sources   []domain.Source   `json:"sources"`
+	Facts     []domain.Fact     `json:"facts"`
+	Processes []domain.Process  `json:"processes"`
+	Slices    []domain.Slice    `json:"slices"`
 }
 
 // Store — хранилище реестра в JSON-файле.
@@ -165,6 +166,68 @@ func (s *Store) Tasks(_ context.Context) ([]domain.Task, error) {
 	copy(out, s.st.Tasks)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].OpenedAt.After(out[j].OpenedAt) })
 	return out, nil
+}
+
+// LinkChat закрепляет за задачей чат внешней системы. Повторное закрепление
+// того же чата обновляет только подпись.
+func (s *Store) LinkChat(ctx context.Context, link domain.ChatLink) error {
+	// Задача проверяется до взятия блокировки: Task берёт её сам, а повторный
+	// захват того же мьютекса — это тупик.
+	if _, err := s.Task(ctx, link.TaskID); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, existing := range s.st.ChatLinks {
+		if existing.TaskID != link.TaskID || existing.System != link.System || existing.DialogID != link.DialogID {
+			continue
+		}
+		// Присваивается одна подпись, а не связь целиком. Курсор и дата
+		// закрепления принадлежат не тому, кто выбирает чат: перезапись связью из
+		// аргумента откатила бы курсор в ноль, и вся переписка приехала бы вторым
+		// экземпляром.
+		s.st.ChatLinks[i].Title = link.Title
+		return s.persist()
+	}
+
+	s.st.ChatLinks = append(s.st.ChatLinks, link)
+	return s.persist()
+}
+
+// ChatLinks возвращает чаты задачи в порядке закрепления. Сортировки нет
+// намеренно: в файле связи лежат в том порядке, в каком их добавляли, и это уже
+// нужный порядок.
+func (s *Store) ChatLinks(_ context.Context, taskID string) ([]domain.ChatLink, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []domain.ChatLink
+	for _, l := range s.st.ChatLinks {
+		if l.TaskID == taskID {
+			out = append(out, l)
+		}
+	}
+	return out, nil
+}
+
+// AdvanceChatCursor сдвигает курсор синхронизации закреплённого чата.
+func (s *Store) AdvanceChatCursor(_ context.Context, taskID, system, dialogID string, lastMessageID int, syncedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, existing := range s.st.ChatLinks {
+		if existing.TaskID != taskID || existing.System != system || existing.DialogID != dialogID {
+			continue
+		}
+		s.st.ChatLinks[i].LastMessageID = lastMessageID
+		s.st.ChatLinks[i].LastSyncAt = syncedAt
+		return s.persist()
+	}
+	// Проверять существование задачи отдельно незачем: связи без задачи не
+	// бывает, и её отсутствие — тот же ответ «закреплять курсор некуда».
+	return fmt.Errorf("чат %s задачи %s: %w", dialogID, taskID, store.ErrNotFound)
 }
 
 // AddSource добавляет источник. Источник без задачи допустим: это общая

@@ -101,6 +101,13 @@ func (k SourceKind) Valid() bool {
 	return false
 }
 
+// SystemBitrix — имя портала в ExternalRef.System и ChatLink.System.
+//
+// Константа, а не строка по месту: имя системы участвует и в ключе оригинала, и
+// в ключе закреплённого чата. Опечатка в одном из двух мест развела бы подтяжку
+// с реестром молча — сообщения приходили бы, а дубль опознать было бы нечем.
+const SystemBitrix = "bitrix24"
+
 // ExternalRef — адрес материала в системе, из которой он пришёл.
 //
 // Нужен для двух вещей. Первая: повторная подтяжка того же чата не должна
@@ -112,7 +119,7 @@ func (k SourceKind) Valid() bool {
 // Пустая структура означает, что материал вставили руками и внешнего оригинала
 // у него нет.
 type ExternalRef struct {
-	System    string `json:"system,omitempty"`    // «bitrix24»
+	System    string `json:"system,omitempty"`    // SystemBitrix и подобные
 	ChatID    string `json:"chatId,omitempty"`    // диалог, откуда взято сообщение
 	MessageID string `json:"messageId,omitempty"` // идентификатор сообщения
 	URL       string `json:"url,omitempty"`       // ссылка на оригинал, если есть

@@ -44,6 +44,8 @@ func Run(t *testing.T, open New) {
 		{"Empty", testEmpty},
 		{"Task", testTask},
 		{"TasksOrder", testTasksOrder},
+		{"ChatLink", testChatLink},
+		{"ChatCursor", testChatCursor},
 		{"Source", testSource},
 		{"SourcesOrder", testSourcesOrder},
 		{"SharedSource", testSharedSource},
@@ -162,6 +164,152 @@ func testTasksOrder(t *testing.T, st store.Store) {
 		if list[i].ID != id {
 			t.Errorf("задача %d = %q, хотели %q", i, list[i].ID, id)
 		}
+	}
+}
+
+func testChatLink(t *testing.T, st store.Store) {
+	ctx := context.Background()
+
+	create(t, st, task("aura", utc(2026, time.June, 1)))
+	create(t, st, task("other", utc(2026, time.June, 2)))
+
+	// Чат к несуществующей задаче — отказ, а не связь без задачи: подтяжка
+	// прочитала бы переписку и не нашла, к чему её приложить.
+	orphan := domain.ChatLink{TaskID: "нет такой", System: domain.SystemBitrix, DialogID: "chat12"}
+	if err := st.LinkChat(ctx, orphan); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("чат к неизвестной задаче: ошибка %v, хотели ErrNotFound", err)
+	}
+
+	want := domain.ChatLink{
+		TaskID: "aura", System: domain.SystemBitrix, DialogID: "chat12",
+		Title:         "АУРА — внедрение",
+		LastMessageID: 46,
+		LastSyncAt:    utc(2026, time.August, 27),
+		LinkedAt:      utc(2026, time.August, 20),
+	}
+	link(t, st, want)
+	// Второй чат у той же задачи и тот же чат у другой задачи: ни то, ни другое
+	// не запрещено. Задачу обсуждают в нескольких местах, а один чат говорит о
+	// нескольких задачах — случай ровно тот же, что со сводкой мостика, и
+	// решать его за заказчиком хранилище не вправе.
+	link(t, st, domain.ChatLink{TaskID: "aura", System: domain.SystemBitrix, DialogID: "8", Title: "личная переписка"})
+	link(t, st, domain.ChatLink{TaskID: "other", System: domain.SystemBitrix, DialogID: "chat12", Title: "тот же чат"})
+
+	got, err := st.ChatLinks(ctx, "aura")
+	if err != nil {
+		t.Fatalf("ChatLinks: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("чатов %d, хотели 2: %+v", len(got), got)
+	}
+	// Порядок закрепления, а не порядок идентификаторов: список показывают
+	// человеку, и первым в нём стоит выбранный первым.
+	if got[0].DialogID != "chat12" || got[1].DialogID != "8" {
+		t.Errorf("порядок чатов: %q, %q", got[0].DialogID, got[1].DialogID)
+	}
+
+	first := got[0]
+	switch {
+	case first.TaskID != want.TaskID, first.System != want.System:
+		t.Errorf("ключ связи искажён: %+v", first)
+	case first.Title != want.Title:
+		t.Errorf("подпись = %q, хотели %q", first.Title, want.Title)
+	case first.LastMessageID != want.LastMessageID:
+		t.Errorf("курсор = %d, хотели %d", first.LastMessageID, want.LastMessageID)
+	}
+	if !first.LastSyncAt.Equal(want.LastSyncAt) {
+		t.Errorf("дата чтения = %v, хотели %v", first.LastSyncAt, want.LastSyncAt)
+	}
+	if !first.LinkedAt.Equal(want.LinkedAt) {
+		t.Errorf("дата закрепления = %v, хотели %v", first.LinkedAt, want.LinkedAt)
+	}
+	// Незаполненные даты обязаны вернуться незаполненными: правило всей схемы —
+	// нулевое время это NULL, а не «01.01.0001». Иначе в интерфейсе появится
+	// дата, о которой никто не говорил.
+	if second := got[1]; !second.LastSyncAt.IsZero() || !second.LinkedAt.IsZero() {
+		t.Errorf("пустые даты заполнились: чтение %v, закрепление %v",
+			second.LastSyncAt, second.LinkedAt)
+	}
+
+	// У неизвестной задачи чатов нет, и это пустой список, а не ошибка: спросить
+	// про закреплённые чаты можно у любой задачи.
+	if list, err := st.ChatLinks(ctx, "нет такой"); err != nil || len(list) != 0 {
+		t.Errorf("чаты неизвестной задачи: %d (%v)", len(list), err)
+	}
+}
+
+// testChatCursor: закрепление и подтяжка — разные события с разными правами.
+// Человек распоряжается подписью, подтяжка — курсором, и путаница между ними
+// стоит дорого в обе стороны: откатившийся курсор приводит всю переписку вторым
+// экземпляром, уехавший вперёд — молча теряет сообщения.
+func testChatCursor(t *testing.T, st store.Store) {
+	ctx := context.Background()
+
+	create(t, st, task("aura", utc(2026, time.June, 1)))
+
+	// Курсор незакреплённого чата ставить некуда. Сообщения к этому моменту уже
+	// прочитаны, и молчаливый пропуск означал бы потерянную переписку.
+	err := st.AdvanceChatCursor(ctx, "aura", domain.SystemBitrix, "chat12", 10, utc(2026, time.August, 25))
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("курсор незакреплённого чата: ошибка %v, хотели ErrNotFound", err)
+	}
+	err = st.AdvanceChatCursor(ctx, "нет такой", domain.SystemBitrix, "chat12", 10, time.Time{})
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("курсор чата неизвестной задачи: ошибка %v, хотели ErrNotFound", err)
+	}
+
+	link(t, st, domain.ChatLink{
+		TaskID: "aura", System: domain.SystemBitrix, DialogID: "chat12",
+		Title: "АУРА", LinkedAt: utc(2026, time.August, 20),
+	})
+
+	synced := utc(2026, time.August, 25)
+	if err := st.AdvanceChatCursor(ctx, "aura", domain.SystemBitrix, "chat12", 42, synced); err != nil {
+		t.Fatalf("AdvanceChatCursor: %v", err)
+	}
+	got := onlyLink(t, st, "aura")
+	if got.LastMessageID != 42 || !got.LastSyncAt.Equal(synced) {
+		t.Fatalf("курсор = %d от %v, хотели 42 от %v", got.LastMessageID, got.LastSyncAt, synced)
+	}
+	if !got.Synced() {
+		t.Error("чат с прочитанным сообщением не считает себя прочитанным")
+	}
+
+	// Повторный выбор того же чата — уточнение подписи, а не новое закрепление.
+	// Курсор он сдвигать не вправе: откатив его в ноль, следующая подтяжка
+	// принесла бы заново всю переписку, вторым экземпляром каждого сообщения.
+	link(t, st, domain.ChatLink{
+		TaskID: "aura", System: domain.SystemBitrix, DialogID: "chat12",
+		Title: "АУРА — внедрение", LinkedAt: utc(2026, time.August, 28),
+	})
+	after := onlyLink(t, st, "aura")
+	switch {
+	case after.Title != "АУРА — внедрение":
+		t.Errorf("подпись не обновилась: %q", after.Title)
+	case after.LastMessageID != 42:
+		t.Errorf("курсор сбился на %d, хотели 42", after.LastMessageID)
+	case !after.LastSyncAt.Equal(synced):
+		t.Errorf("дата чтения сбилась на %v, хотели %v", after.LastSyncAt, synced)
+	case !after.LinkedAt.Equal(utc(2026, time.August, 20)):
+		t.Errorf("дата закрепления сдвинулась на %v, хотели 20 августа", after.LinkedAt)
+	}
+
+	// Система входит в ключ: идентификатор диалога уникален внутри портала, а не
+	// вообще. Без неё курсор чата-тёзки из другой системы уехал бы вместе с этим.
+	link(t, st, domain.ChatLink{TaskID: "aura", System: "telegram", DialogID: "chat12", Title: "тёзка"})
+	if err := st.AdvanceChatCursor(ctx, "aura", "telegram", "chat12", 7, synced); err != nil {
+		t.Fatalf("AdvanceChatCursor для другой системы: %v", err)
+	}
+	list, err := st.ChatLinks(ctx, "aura")
+	if err != nil {
+		t.Fatalf("ChatLinks: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("чатов %d, хотели 2: %+v", len(list), list)
+	}
+	if list[0].LastMessageID != 42 || list[1].LastMessageID != 7 {
+		t.Errorf("курсоры разъехались: %d и %d, хотели 42 и 7",
+			list[0].LastMessageID, list[1].LastMessageID)
 	}
 }
 
@@ -744,6 +892,30 @@ func add(t *testing.T, st store.Store, src domain.Source) {
 	if err := st.AddSource(context.Background(), src); err != nil {
 		t.Fatalf("AddSource %s: %v", src.ID, err)
 	}
+}
+
+func link(t *testing.T, st store.Store, l domain.ChatLink) {
+	t.Helper()
+
+	if err := st.LinkChat(context.Background(), l); err != nil {
+		t.Fatalf("LinkChat %s: %v", l.DialogID, err)
+	}
+}
+
+// onlyLink возвращает единственный чат задачи. Обёртка нужна потому, что
+// проверка курсора спрашивает об этом трижды: без неё проверяемое утверждение
+// каждый раз пряталось бы за разбором ответа.
+func onlyLink(t *testing.T, st store.Store, taskID string) domain.ChatLink {
+	t.Helper()
+
+	list, err := st.ChatLinks(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("ChatLinks %s: %v", taskID, err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("чатов задачи %s: %d, хотели 1", taskID, len(list))
+	}
+	return list[0]
 }
 
 func empty(t *testing.T, st store.Store) bool {
