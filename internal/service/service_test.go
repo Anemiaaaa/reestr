@@ -138,6 +138,52 @@ func TestCreateTask(t *testing.T) {
 	})
 }
 
+func TestPinChat(t *testing.T) {
+	t.Run("закрепляет чат за задачей", func(t *testing.T) {
+		s := newService(t)
+		ctx := context.Background()
+
+		task, err := s.CreateTask(ctx, domain.Task{Title: "Внедрение"})
+		if err != nil {
+			t.Fatalf("создать задачу: %v", err)
+		}
+		got, err := s.PinChat(ctx, task.ID, domain.SystemBitrix, "chat12", "АУРА")
+		if err != nil {
+			t.Fatalf("закрепить чат: %v", err)
+		}
+		if got.TaskID != task.ID || got.DialogID != "chat12" || got.Title != "АУРА" {
+			t.Errorf("связь %+v", got)
+		}
+		if !got.LinkedAt.Equal(today) {
+			t.Errorf("дата закрепления %v, часы сервиса на %v", got.LinkedAt, today)
+		}
+
+		list, err := s.TaskChats(ctx, task.ID)
+		if err != nil {
+			t.Fatalf("список чатов: %v", err)
+		}
+		if len(list) != 1 || list[0].DialogID != "chat12" {
+			t.Errorf("чаты %+v", list)
+		}
+	})
+
+	t.Run("без задачи не проходит", func(t *testing.T) {
+		s := newService(t)
+		_, err := s.PinChat(context.Background(), "нет-такой", domain.SystemBitrix, "8", "")
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("ошибка %v, ожидалась store.ErrNotFound", err)
+		}
+	})
+
+	t.Run("пустое не проходит", func(t *testing.T) {
+		s := newService(t)
+		_, err := s.PinChat(context.Background(), "", "", "", "")
+		if !errors.Is(err, ErrInvalid) {
+			t.Errorf("ошибка %v, ожидалась ErrInvalid", err)
+		}
+	})
+}
+
 func TestAddSource(t *testing.T) {
 	t.Run("заполняет заголовок видом и ставит время загрузки", func(t *testing.T) {
 		s := seeded(t)

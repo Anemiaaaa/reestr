@@ -8,8 +8,10 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/Anemiaaaa/reestr/internal/bitrix"
 	"github.com/Anemiaaaa/reestr/internal/domain"
 	"github.com/Anemiaaaa/reestr/internal/ru"
 	"github.com/Anemiaaaa/reestr/internal/service"
@@ -33,6 +35,7 @@ func New(svc *service.Service, web fs.FS, log *slog.Logger) *Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("GET /api/bitrix/chats", s.chats)
 	mux.HandleFunc("GET /api/tasks", s.tasks)
 	mux.HandleFunc("POST /api/tasks", s.createTask)
 	mux.HandleFunc("GET /api/tasks/{id}", s.task)
@@ -62,8 +65,18 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
 		"analyst": s.svc.Analyst(),
+		"bitrix":  s.svc.PortalConfigured(),
 		"now":     s.svc.Now().Format(time.RFC3339),
 	})
+}
+
+func (s *Server) chats(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.PortalChats(r.Context(), 50)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newChatOptions(s.svc.PortalConfigured(), list))
 }
 
 func (s *Server) tasks(w http.ResponseWriter, r *http.Request) {
@@ -89,6 +102,9 @@ type taskRequest struct {
 	OpenedAt date   `json:"openedAt"`
 	Deadline date   `json:"deadline"`
 	Budget   int    `json:"budget"`
+	// ChatID — DialogID выбранного чата. Пусто: задача без закрепления, это
+	// нормальный путь и с порталом, и без него.
+	ChatID string `json:"chatId"`
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +113,8 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	t, err := s.svc.CreateTask(r.Context(), domain.Task{
+	ctx := r.Context()
+	t, err := s.svc.CreateTask(ctx, domain.Task{
 		Project:  req.Project,
 		Title:    req.Title,
 		Author:   req.Author,
@@ -110,7 +127,28 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	if id := strings.TrimSpace(req.ChatID); id != "" {
+		if _, err := s.svc.PinChat(ctx, t.ID, domain.SystemBitrix, id, s.chatTitle(ctx, id)); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
 	writeJSON(w, http.StatusCreated, newTask(t, s.svc.Now()))
+}
+
+// chatTitle берёт подпись из списка портала. Если чата там нет — пустая строка:
+// PinChat всё равно закрепит идентификатор, а подпись подставит из него сам.
+func (s *Server) chatTitle(ctx context.Context, dialogID string) string {
+	list, err := s.svc.PortalChats(ctx, 50)
+	if err != nil {
+		return ""
+	}
+	for _, c := range list {
+		if c.DialogID == dialogID {
+			return c.Title
+		}
+	}
+	return ""
 }
 
 func (s *Server) task(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +170,7 @@ type board struct {
 	Slice    slice     `json:"slice"`
 	Diagrams []diagram `json:"diagrams"`
 	Sources  []source  `json:"sources"`
+	Chats    []chat    `json:"chats"`
 	Facts    int       `json:"facts"`
 }
 
@@ -163,6 +202,11 @@ func (s *Server) board(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	links, err := s.svc.TaskChats(ctx, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
 
 	srcs := newSources(list)
 	out := board{
@@ -170,6 +214,7 @@ func (s *Server) board(w http.ResponseWriter, r *http.Request) {
 		Slice:    newSlice(sl, t, list, now),
 		Diagrams: newDiagrams(procs, srcs),
 		Sources:  make([]source, 0, len(list)),
+		Chats:    newLinks(links),
 		Facts:    len(facts),
 	}
 	for _, src := range list {
@@ -397,6 +442,10 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		code = http.StatusConflict
 	case errors.Is(err, service.ErrInvalid):
 		code = http.StatusBadRequest
+	}
+	var portal *bitrix.Error
+	if errors.As(err, &portal) {
+		code = http.StatusBadGateway
 	}
 	if code == http.StatusInternalServerError {
 		s.log.Error("запрос не выполнен", "путь", r.URL.Path, "ошибка", err)

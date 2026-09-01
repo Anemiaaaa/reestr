@@ -121,9 +121,9 @@ func (it recentItem) chat() (Chat, bool) {
 		return Chat{}, false
 	}
 
-	title := strings.TrimSpace(it.Title)
+	title := caption(it.Title)
 	if title == "" && it.Chat != nil {
-		title = strings.TrimSpace(it.Chat.Name)
+		title = caption(it.Chat.Name)
 	}
 	if title == "" {
 		title = "Без названия"
@@ -150,6 +150,17 @@ func (it recentItem) chat() (Chat, bool) {
 		ch.Bot = it.User.Bot || it.User.Type == "bot"
 	}
 	return ch, true
+}
+
+// caption готовит название чата.
+//
+// Через ту же замазку, что и preview, и по более веской причине: название мы не
+// только показываем, но и храним в связи задачи с чатом. Чат в портале называют
+// как угодно, в том числе адресом вебхука, — а сохранённый секрет из хранилища
+// уже не отзовёшь.
+func caption(text string) string {
+	s, _ := Redact(Plain(text))
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // preview готовит подпись к чату в списке.

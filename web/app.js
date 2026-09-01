@@ -178,8 +178,13 @@ function drawHead(h) {
   }
   if (h.budget) box.append(cell("Бюджет", h.budget));
   box.append(cell("Срез", ["v" + h.version, el("div", { class: "crumb", text: h.builtAt })]));
-
   return box;
+}
+
+function drawChats(list) {
+  if (!list || !list.length) return null;
+  return el("div", { class: "crumb", style: "margin-top:8px" },
+    "чат: " + list.map(c => c.syncText ? c.label + " (" + c.syncText + ")" : c.label).join(" · "));
 }
 
 function drawWarns(h) {
@@ -492,6 +497,7 @@ function render() {
     el("div", { class: "crumb", text: b.task.project }),
     el("h1", { text: b.slice.head.title }),
     drawHead(b.slice.head),
+    drawChats(b.chats),
     drawWarns(b.slice.head));
 
   page.append(el("div", { class: "actions" },
@@ -592,9 +598,9 @@ function ask(title, fields) {
       input = el("input", { id, type: f.kind || "text", required: f.required, placeholder: f.hint, value: f.value });
     }
     inputs[f.name] = input;
-    body.append(el("div", { class: "field" },
-      el("label", { class: "field__label", for: id, text: f.label }),
-      input));
+    const row = [el("label", { class: "field__label", for: id, text: f.label }), input];
+    if (f.note) row.push(el("div", { class: "field__hint", text: f.note }));
+    body.append(el("div", { class: "field" }, row));
   }
 
   dlg.returnValue = "";
@@ -661,6 +667,22 @@ async function addSource() {
 }
 
 async function addTask() {
+  const chatField = {
+    name: "chatId",
+    label: "Чат Bitrix24",
+    kind: "select",
+    options: [["", "без чата"]],
+    note: "Bitrix24 не настроен: задача создастся без чата",
+  };
+  try {
+    const opts = await api("/api/bitrix/chats");
+    chatField.note = opts.note;
+    chatField.options = [["", "без чата"]].concat(
+      (opts.chats || []).map(c => [c.dialogId, c.label]));
+  } catch (e) {
+    chatField.note = "список чатов не загрузился: " + e.message + ". Задачу можно создать без чата.";
+  }
+
   const got = await ask("Новая задача", [
     { name: "project", label: "Проект", required: true, hint: "АУРА — дистрибуция бытовой химии" },
     { name: "title", label: "Задача", required: true, hint: "Внедрение автоматизации" },
@@ -669,13 +691,16 @@ async function addTask() {
     { name: "openedAt", label: "Поставлена", kind: "date" },
     { name: "deadline", label: "Срок", kind: "date" },
     { name: "budget", label: "Бюджет, ₽", kind: "number" },
+    chatField,
   ]);
   if (!got) return;
 
   try {
+    const body = { ...got, budget: Number(got.budget) || 0 };
+    if (!body.chatId) delete body.chatId;
     const created = await api("/api/tasks", {
       method: "POST",
-      body: JSON.stringify({ ...got, budget: Number(got.budget) || 0 }),
+      body: JSON.stringify(body),
     });
     state.tasks = await api("/api/tasks");
     await open(created.id);

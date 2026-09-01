@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Anemiaaaa/reestr/internal/analyst"
+	"github.com/Anemiaaaa/reestr/internal/bitrix"
 	"github.com/Anemiaaaa/reestr/internal/domain"
 	"github.com/Anemiaaaa/reestr/internal/ru"
 	"github.com/Anemiaaaa/reestr/internal/store"
@@ -34,6 +35,7 @@ var ErrInvalid = errors.New("некорректные данные")
 type Service struct {
 	store   store.Store
 	analyst analyst.Analyst
+	portal  *bitrix.Client
 	now     func() time.Time
 	log     *slog.Logger
 }
@@ -55,6 +57,18 @@ func New(st store.Store, an analyst.Analyst, log *slog.Logger) *Service {
 
 // Clock подменяет часы сервиса.
 func (s *Service) Clock(f func() time.Time) { s.now = f }
+
+// Portal подключает портал Bitrix24.
+//
+// Отдельным вызовом, а не параметром New, по той же причине, что и Clock:
+// портал нужен двум методам из двадцати, и большинству вызовов сервиса — в том
+// числе всем проверкам — он не нужен вовсе. Без него реестр работает целиком,
+// теряя только автоматический источник.
+func (s *Service) Portal(c *bitrix.Client) { s.portal = c }
+
+// PortalConfigured сообщает, настроен ли портал. Проверка на nil здесь, а не у
+// вызывающего: сервис собирают и без портала, и это нормальный режим.
+func (s *Service) PortalConfigured() bool { return s.portal != nil && s.portal.Configured() }
 
 // Now сообщает текущее время сервиса.
 func (s *Service) Now() time.Time { return s.now() }
@@ -94,6 +108,77 @@ func (s *Service) CreateTask(ctx context.Context, t domain.Task) (domain.Task, e
 	}
 	s.log.Info("задача создана", "задача", t.ID, "название", t.Title)
 	return t, nil
+}
+
+// PortalChats отдаёт чаты портала, пригодные для закрепления за задачей.
+//
+// Без настроенного портала — пустой список и никакой ошибки. Различать «портала
+// нет» и «портал не ответил» должен транспорт: для человека это два разных
+// сообщения, а закрепление чата не обязательно ни в одном из случаев.
+func (s *Service) PortalChats(ctx context.Context, limit int) ([]bitrix.Chat, error) {
+	if !s.PortalConfigured() {
+		return nil, nil
+	}
+	all, err := s.portal.Chats(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]bitrix.Chat, 0, len(all))
+	for _, c := range all {
+		if c.Selectable() {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// PinChat закрепляет за задачей чат внешней системы.
+//
+// Курсор синхронизации здесь не выставляется и не сдвигается: закрепление — это
+// выбор человека, а курсор принадлежит подтяжке. Повторный выбор того же чата
+// уточняет подпись и не заставляет перечитывать переписку заново.
+func (s *Service) PinChat(ctx context.Context, taskID, system, dialogID, title string) (domain.ChatLink, error) {
+	link := domain.ChatLink{
+		TaskID:   strings.TrimSpace(taskID),
+		System:   strings.TrimSpace(system),
+		DialogID: strings.TrimSpace(dialogID),
+		Title:    strings.TrimSpace(title),
+		LinkedAt: s.now(),
+	}
+	if link.System == "" {
+		link.System = domain.SystemBitrix
+	}
+	if link.Zero() {
+		return domain.ChatLink{}, fmt.Errorf("нужны и задача, и чат: %w", ErrInvalid)
+	}
+
+	// Подпись приходит из браузера, а у поля есть обещание: в нём нет токенов
+	// доступа (см. domain.ChatLink.Title). Держит обещание тот, кто пишет поле, —
+	// иначе оно держится только до первого нового вызывающего. Токен в подписи
+	// стоит отдельной строки в логе: значит, он где-то отрисовался на экране.
+	if safe, hit := bitrix.Redact(link.Title); hit {
+		link.Title = safe
+		s.log.Warn("в подписи чата был токен доступа",
+			"задача", link.TaskID, "чат", link.DialogID)
+	}
+
+	// Проверять существование задачи отдельно не нужно: LinkChat возвращает
+	// store.ErrNotFound сам, и лишний поход в хранилище только добавил бы гонку.
+	if err := s.store.LinkChat(ctx, link); err != nil {
+		return domain.ChatLink{}, err
+	}
+	s.log.Info("чат закреплён",
+		"задача", link.TaskID, "система", link.System, "чат", link.DialogID)
+	return link, nil
+}
+
+// TaskChats возвращает чаты, закреплённые за задачей, в порядке закрепления.
+func (s *Service) TaskChats(ctx context.Context, taskID string) ([]domain.ChatLink, error) {
+	if _, err := s.store.Task(ctx, taskID); err != nil {
+		return nil, err
+	}
+	return s.store.ChatLinks(ctx, taskID)
 }
 
 // Sources возвращает источники задачи.

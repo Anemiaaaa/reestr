@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Anemiaaaa/reestr/internal/analyst/manual"
+	"github.com/Anemiaaaa/reestr/internal/bitrix"
 	"github.com/Anemiaaaa/reestr/internal/config"
 	"github.com/Anemiaaaa/reestr/internal/httpapi"
 	"github.com/Anemiaaaa/reestr/internal/service"
@@ -80,6 +81,12 @@ func run() error {
 	defer closeStore()
 
 	svc := service.New(st, manual.New(), log)
+	// Вебхук не обязателен: без него реестр работает целиком, теряя только
+	// список чатов при создании задачи. Адрес в лог не пишется — в нём токен.
+	if hook := config.Env("BITRIX_WEBHOOK", ""); hook != "" {
+		svc.Portal(bitrix.New(hook, log))
+		log.Info("портал Bitrix24 подключён")
+	}
 
 	empty, err := st.Empty(ctx)
 	if err != nil {

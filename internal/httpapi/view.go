@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Anemiaaaa/reestr/internal/bitrix"
 	"github.com/Anemiaaaa/reestr/internal/domain"
 	"github.com/Anemiaaaa/reestr/internal/ru"
 )
@@ -527,6 +528,93 @@ func newArtifacts(list []domain.Artifact) []artifact {
 		v := artifact{Name: a.Name, Present: a.Present, WouldGive: a.WouldGive}
 		if a.Bytes > 0 {
 			v.SizeText = fmt.Sprintf("%s КБ", ru.Fixed(float64(a.Bytes)/1024, 1))
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// --- чаты портала ---
+
+// chat — строка выпадающего списка чатов и она же строка списка закреплённых.
+// Обе роли обходятся одной формой: браузеру в них нужно одно и то же —
+// значение для отправки и готовая подпись для показа.
+type chat struct {
+	DialogID string `json:"dialogId"`
+	Title    string `json:"title"`
+
+	// Label — подпись целиком, вместе с датой. Собрана здесь по той же причине,
+	// что и все остальные подписи: дату в браузере пришлось бы форматировать
+	// второй раз, и рано или поздно она отформатировалась бы иначе.
+	Label string `json:"label"`
+
+	// SyncText — что известно про подтяжку. Пусто у чатов из портала: они ещё
+	// не закреплены, и подтягивать из них нечего.
+	SyncText string `json:"syncText,omitempty"`
+}
+
+// chatOptions — ответ на запрос списка чатов портала.
+//
+// Configured и пустой список — разные вещи, и различать их должен браузер:
+// «Bitrix24 не настроен» и «портал не отдал ни одного чата» человек исправляет
+// по-разному. Поясняет разницу Note; форма при этом работает в любом случае.
+type chatOptions struct {
+	Configured bool   `json:"configured"`
+	Note       string `json:"note"`
+	Chats      []chat `json:"chats"`
+}
+
+func newChatOptions(configured bool, list []bitrix.Chat) chatOptions {
+	opts := chatOptions{Configured: configured, Chats: newChats(list)}
+	switch {
+	case !configured:
+		opts.Note = "Bitrix24 не настроен: задача создастся без чата"
+	case len(list) == 0:
+		opts.Note = "портал не отдал ни одного чата"
+	default:
+		// Ограничение источника, а не наше: im.recent.list показывает недавние
+		// чаты владельца вебхука, а не все чаты портала.
+		opts.Note = "недавние чаты владельца вебхука; если нужного нет — зайдите в него в портале"
+	}
+	return opts
+}
+
+func newChats(list []bitrix.Chat) []chat {
+	out := make([]chat, 0, len(list))
+	for _, c := range list {
+		v := chat{DialogID: c.DialogID, Title: c.Title, Label: c.Title}
+		if !c.LastActivity.IsZero() {
+			v.Label += " · " + domain.FormatDate(c.LastActivity)
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// newLinks описывает уже закреплённые чаты.
+func newLinks(list []domain.ChatLink) []chat {
+	out := make([]chat, 0, len(list))
+	for _, l := range list {
+		// Подписи может не быть: чат мог быть закреплён не из формы. Тогда
+		// идентификатор диалога — единственное, что можно показать, и это лучше
+		// пустой строки.
+		title := l.Title
+		if title == "" {
+			title = l.DialogID
+		}
+
+		v := chat{DialogID: l.DialogID, Title: title, Label: title}
+		switch {
+		case !l.Synced():
+			v.SyncText = "сообщения ещё не переносились"
+		case l.LastSyncAt.IsZero():
+			// Курсор есть, а времени похода нет. Значения расходятся не сами
+			// собой, но Synced смотрит только на курсор, и подпись не должна
+			// рассыпаться из-за этого расхождения.
+			v.SyncText = fmt.Sprintf("сообщения до №%d", l.LastMessageID)
+		default:
+			v.SyncText = fmt.Sprintf("сообщения до №%d, читали %s",
+				l.LastMessageID, domain.FormatDate(l.LastSyncAt))
 		}
 		out = append(out, v)
 	}
