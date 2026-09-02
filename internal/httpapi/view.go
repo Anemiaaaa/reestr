@@ -536,6 +536,87 @@ func newArtifacts(list []domain.Artifact) []artifact {
 
 // --- чаты портала ---
 
+// portalTask — задача портала в выпадающем списке формы.
+//
+// Кроме номера и подписи здесь лежат поля карточки: браузер подставляет их в
+// форму, чтобы PM не перепечатывал то, что уже названо в Bitrix. Правку они не
+// запрещают — в портале задачу могли назвать служебно, и реестр обязан дать её
+// переписать.
+type portalTask struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+
+	// Title, Author, Assignee, Deadline, OpenedAt — ровно те имена, что у полей
+	// формы. Совпадение намеренное: браузер раскладывает их по полям одним
+	// перебором, без таблицы соответствий, которая разошлась бы с формой.
+	Title    string `json:"title"`
+	Author   string `json:"author,omitempty"`
+	Assignee string `json:"assignee,omitempty"`
+	Deadline string `json:"deadline,omitempty"`
+	OpenedAt string `json:"openedAt,omitempty"`
+}
+
+// taskOptions — ответ на запрос задач портала. Configured и пустой список
+// различаются по той же причине, что и в chatOptions: человек исправляет их
+// по-разному.
+type taskOptions struct {
+	Configured bool         `json:"configured"`
+	Note       string       `json:"note"`
+	Tasks      []portalTask `json:"tasks"`
+}
+
+func newTaskOptions(configured bool, list []bitrix.Task) taskOptions {
+	opts := taskOptions{Configured: configured, Tasks: newPortalTasks(list)}
+	switch {
+	case !configured:
+		opts.Note = "Bitrix24 не настроен: задача создастся без чата"
+	case len(list) == 0:
+		opts.Note = "портал не отдал ни одной задачи"
+	case len(opts.Tasks) < len(list):
+		// Задача без чата в выбор не попадает, и молчать об этом нельзя: человек
+		// ищет её глазами и не находит.
+		opts.Note = fmt.Sprintf("задач без чата: %d — чат заводится при первом событии по задаче",
+			len(list)-len(opts.Tasks))
+	default:
+		opts.Note = "поля формы заполнятся из карточки задачи; их можно исправить"
+	}
+	return opts
+}
+
+func newPortalTasks(list []bitrix.Task) []portalTask {
+	out := make([]portalTask, 0, len(list))
+	for _, t := range list {
+		// Задача без чата отсеивается здесь, а не в браузере: выбрать её нельзя,
+		// а строка в списке, на которую нельзя нажать, — обещание, которого
+		// интерфейс не сдержит.
+		if t.DialogID() == "" {
+			continue
+		}
+
+		v := portalTask{
+			ID:       t.ID,
+			Title:    t.Title,
+			Author:   t.Author,
+			Assignee: t.Assignee,
+			Label:    "#" + t.ID + " " + t.Title,
+		}
+		if t.Closed {
+			v.Label += " · завершена"
+		}
+		// Даты уходят в браузер как ГГГГ-ММ-ДД: их принимает поле input[type=date]
+		// и понимает разбор запроса. Незаполненная дата остаётся пустой строкой —
+		// подставлять на её место сегодняшнюю значило бы придумать срок.
+		if !t.Deadline.IsZero() {
+			v.Deadline = t.Deadline.Format(dateLayout)
+		}
+		if !t.CreatedAt.IsZero() {
+			v.OpenedAt = t.CreatedAt.Format(dateLayout)
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
 // chat — строка выпадающего списка чатов и она же строка списка закреплённых.
 // Обе роли обходятся одной формой: браузеру в них нужно одно и то же —
 // значение для отправки и готовая подпись для показа.
@@ -551,6 +632,10 @@ type chat struct {
 	// SyncText — что известно про подтяжку. Пусто у чатов из портала: они ещё
 	// не закреплены, и подтягивать из них нечего.
 	SyncText string `json:"syncText,omitempty"`
+
+	// TaskRef — задача портала, чей это чат, готовой подписью. Пусто у чата,
+	// закреплённого самого по себе.
+	TaskRef string `json:"taskRef,omitempty"`
 }
 
 // chatOptions — ответ на запрос списка чатов портала.
@@ -604,6 +689,9 @@ func newLinks(list []domain.ChatLink) []chat {
 		}
 
 		v := chat{DialogID: l.DialogID, Title: title, Label: title}
+		if l.ExternalTaskID != "" {
+			v.TaskRef = "задача Bitrix24 №" + l.ExternalTaskID
+		}
 		switch {
 		case !l.Synced():
 			v.SyncText = "сообщения ещё не переносились"

@@ -183,8 +183,14 @@ function drawHead(h) {
 
 function drawChats(list) {
   if (!list || !list.length) return null;
-  return el("div", { class: "crumb", style: "margin-top:8px" },
-    "чат: " + list.map(c => c.syncText ? c.label + " (" + c.syncText + ")" : c.label).join(" · "));
+  // Подпись собирается из готовых кусков сервера: и «задача Bitrix24 №4», и
+  // «сообщения до №46» приходят строками, чтобы не форматировать их здесь
+  // второй раз.
+  const line = list.map(c => {
+    const notes = [c.taskRef, c.syncText].filter(Boolean);
+    return notes.length ? c.label + " (" + notes.join(", ") + ")" : c.label;
+  }).join(" · ");
+  return el("div", { class: "crumb", style: "margin-top:8px" }, "чат: " + line);
 }
 
 function drawWarns(h) {
@@ -598,6 +604,11 @@ function ask(title, fields) {
       input = el("input", { id, type: f.kind || "text", required: f.required, placeholder: f.hint, value: f.value });
     }
     inputs[f.name] = input;
+    // Шов для полей, которые заполняют другие поля: выбор задачи портала
+    // подставляет название, людей и даты. Обработчик получает все поля формы, а
+    // не отдельный список: перечислять их значило бы завести второе описание
+    // формы рядом с этим.
+    if (f.onChange) input.addEventListener("change", () => f.onChange(input.value, inputs));
     const row = [el("label", { class: "field__label", for: id, text: f.label }), input];
     if (f.note) row.push(el("div", { class: "field__hint", text: f.note }));
     body.append(el("div", { class: "field" }, row));
@@ -666,24 +677,46 @@ async function addSource() {
   }
 }
 
+// FROM_PORTAL — поля, которые заполняются из карточки задачи Bitrix24. Список
+// один и тот же и для подстановки, и для ответа сервера: имена полей формы там
+// и там совпадают намеренно, поэтому таблицы соответствий здесь нет.
+const FROM_PORTAL = ["title", "author", "assignee", "openedAt", "deadline"];
+
 async function addTask() {
-  const chatField = {
-    name: "chatId",
-    label: "Чат Bitrix24",
+  let portal = [];
+  // Чат больше не выбирают: у задачи Bitrix24 он ровно один, и спрашивать про
+  // то, у чего нет выбора, незачем. Ручка чатов на сервере осталась — она нужна
+  // для обсуждения в отдельном групповом чате.
+  const taskField = {
+    name: "bitrixTaskId",
+    label: "Задача Bitrix24",
     kind: "select",
-    options: [["", "без чата"]],
+    options: [["", "без задачи портала"]],
     note: "Bitrix24 не настроен: задача создастся без чата",
+    onChange(id, inputs) {
+      const chosen = portal.find(t => t.id === id);
+      if (!chosen) return;
+      // Заполняются только пустые поля: человек мог начать печатать до того, как
+      // выбрал задачу, и затирать набранное им нельзя.
+      for (const name of FROM_PORTAL) {
+        const input = inputs[name];
+        if (input && !input.value && chosen[name]) input.value = chosen[name];
+      }
+    },
   };
   try {
-    const opts = await api("/api/bitrix/chats");
-    chatField.note = opts.note;
-    chatField.options = [["", "без чата"]].concat(
-      (opts.chats || []).map(c => [c.dialogId, c.label]));
+    const opts = await api("/api/bitrix/tasks");
+    portal = opts.tasks || [];
+    taskField.note = opts.note;
+    taskField.options = [["", "без задачи портала"]].concat(portal.map(t => [t.id, t.label]));
   } catch (e) {
-    chatField.note = "список чатов не загрузился: " + e.message + ". Задачу можно создать без чата.";
+    // Отказ портала не мешает создать задачу: реестр не должен переставать
+    // работать из-за недоступного Bitrix.
+    taskField.note = "список задач не загрузился: " + e.message + ". Задачу можно создать без чата.";
   }
 
   const got = await ask("Новая задача", [
+    taskField,
     { name: "project", label: "Проект", required: true, hint: "АУРА — дистрибуция бытовой химии" },
     { name: "title", label: "Задача", required: true, hint: "Внедрение автоматизации" },
     { name: "author", label: "Автор постановки", hint: "кто поставил" },
@@ -691,13 +724,12 @@ async function addTask() {
     { name: "openedAt", label: "Поставлена", kind: "date" },
     { name: "deadline", label: "Срок", kind: "date" },
     { name: "budget", label: "Бюджет, ₽", kind: "number" },
-    chatField,
   ]);
   if (!got) return;
 
   try {
     const body = { ...got, budget: Number(got.budget) || 0 };
-    if (!body.chatId) delete body.chatId;
+    if (!body.bitrixTaskId) delete body.bitrixTaskId;
     const created = await api("/api/tasks", {
       method: "POST",
       body: JSON.stringify(body),

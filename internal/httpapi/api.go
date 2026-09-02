@@ -35,6 +35,7 @@ func New(svc *service.Service, web fs.FS, log *slog.Logger) *Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("GET /api/bitrix/tasks", s.portalTasks)
 	mux.HandleFunc("GET /api/bitrix/chats", s.chats)
 	mux.HandleFunc("GET /api/tasks", s.tasks)
 	mux.HandleFunc("POST /api/tasks", s.createTask)
@@ -102,9 +103,14 @@ type taskRequest struct {
 	OpenedAt date   `json:"openedAt"`
 	Deadline date   `json:"deadline"`
 	Budget   int    `json:"budget"`
-	// ChatID — DialogID выбранного чата. Пусто: задача без закрепления, это
-	// нормальный путь и с порталом, и без него.
-	ChatID string `json:"chatId"`
+
+	// BitrixTaskID — номер выбранной задачи портала. Пусто: задача реестра без
+	// закрепления, это нормальный путь и с порталом, и без него.
+	//
+	// Номер задачи, а не чата: чат у задачи портала ровно один, и спрашивать про
+	// него отдельно значило бы спрашивать про то, у чего нет выбора. Какой это
+	// чат, у портала спросит сервис.
+	BitrixTaskID string `json:"bitrixTaskId"`
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +120,19 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+
+	// У портала спрашиваем до создания, а не после. Отказ после CreateTask
+	// оставил бы созданную задачу и ошибку в ответе разом, и повторная отправка
+	// формы завела бы вторую такую же.
+	var portal bitrix.Task
+	if id := strings.TrimSpace(req.BitrixTaskID); id != "" {
+		var err error
+		if portal, err = s.svc.PortalTask(ctx, id); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
+
 	t, err := s.svc.CreateTask(ctx, domain.Task{
 		Project:  req.Project,
 		Title:    req.Title,
@@ -127,8 +146,15 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	if id := strings.TrimSpace(req.ChatID); id != "" {
-		if _, err := s.svc.PinChat(ctx, t.ID, domain.SystemBitrix, id, s.chatTitle(ctx, id)); err != nil {
+	if portal.ID != "" {
+		_, err := s.svc.PinChat(ctx, domain.ChatLink{
+			TaskID:         t.ID,
+			System:         domain.SystemBitrix,
+			DialogID:       portal.DialogID(),
+			Title:          portal.Title,
+			ExternalTaskID: portal.ID,
+		})
+		if err != nil {
 			s.fail(w, r, err)
 			return
 		}
@@ -136,19 +162,19 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, newTask(t, s.svc.Now()))
 }
 
-// chatTitle берёт подпись из списка портала. Если чата там нет — пустая строка:
-// PinChat всё равно закрепит идентификатор, а подпись подставит из него сам.
-func (s *Server) chatTitle(ctx context.Context, dialogID string) string {
-	list, err := s.svc.PortalChats(ctx, 50)
+// portalTasks отдаёт задачи портала для выбора в форме.
+//
+// Ручка чатов рядом осталась намеренно: форма её больше не спрашивает, но
+// обсуждение могут вести и в отдельном групповом чате, и тогда закреплять нужно
+// именно его. Удалить рабочий путь ради того, чтобы его сегодня не показывают,
+// значило бы написать его заново на первую же такую задачу.
+func (s *Server) portalTasks(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.PortalTasks(r.Context(), 50)
 	if err != nil {
-		return ""
+		s.fail(w, r, err)
+		return
 	}
-	for _, c := range list {
-		if c.DialogID == dialogID {
-			return c.Title
-		}
-	}
-	return ""
+	writeJSON(w, http.StatusOK, newTaskOptions(s.svc.PortalConfigured(), list))
 }
 
 func (s *Server) task(w http.ResponseWriter, r *http.Request) {
@@ -376,6 +402,11 @@ func (s *Server) facts(w http.ResponseWriter, r *http.Request) {
 
 // --- вспомогательное ---
 
+// dateLayout — вид даты, на котором сходятся поле input[type=date] и разбор
+// запроса. Константа, а не литерал по месту: расхождение между тем, что уходит
+// в браузер, и тем, что оттуда принимается, тихо обнулило бы дату.
+const dateLayout = "2006-01-02"
+
 // date принимает и «2026-08-31» из поля формы, и «31.08.2026» из рук человека, и
 // полную метку времени от программы.
 type date struct{ time.Time }
@@ -389,7 +420,7 @@ func (d *date) UnmarshalJSON(b []byte) error {
 		d.Time = time.Time{}
 		return nil
 	}
-	for _, layout := range []string{time.RFC3339, "2006-01-02", "02.01.2006"} {
+	for _, layout := range []string{time.RFC3339, dateLayout, "02.01.2006"} {
 		if t, err := time.Parse(layout, s); err == nil {
 			d.Time = t.UTC()
 			return nil
@@ -402,7 +433,7 @@ func (d date) MarshalJSON() ([]byte, error) {
 	if d.IsZero() {
 		return []byte(`""`), nil
 	}
-	return json.Marshal(d.Format("2006-01-02"))
+	return json.Marshal(d.Format(dateLayout))
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {

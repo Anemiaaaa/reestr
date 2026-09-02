@@ -173,7 +173,7 @@ func (s *Store) Tasks(ctx context.Context) ([]domain.Task, error) {
 
 // --- закреплённые чаты ---
 
-const chatLinkCols = `task_id, system, dialog_id, title, last_message_id, last_sync_at, linked_at`
+const chatLinkCols = `task_id, system, dialog_id, title, external_task_id, last_message_id, last_sync_at, linked_at`
 
 func (s *Store) LinkChat(ctx context.Context, link domain.ChatLink) error {
 	// Задача проверяется отдельным запросом, чтобы её отсутствие пришло как
@@ -186,14 +186,16 @@ func (s *Store) LinkChat(ctx context.Context, link domain.ChatLink) error {
 	// Курсора и даты закрепления в списке обновляемых полей нет намеренно.
 	// Повторный выбор того же чата — уточнение подписи: он не должен ни
 	// заставлять перечитывать переписку с начала, ни переписывать дату, когда
-	// чат выбрали впервые.
+	// чат выбрали впервые. Задача портала обновляется вместе с подписью и по той
+	// же причине: обе пришли от человека, выбравшего чат, а не от подтяжки.
 	const q = `INSERT INTO chat_links (` + chatLinkCols + `)
-	           VALUES ($1, $2, $3, $4, $5, $6, $7)
+	           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	           ON CONFLICT (task_id, system, dialog_id) DO UPDATE SET
-	               title = EXCLUDED.title`
+	               title = EXCLUDED.title,
+	               external_task_id = EXCLUDED.external_task_id`
 
 	_, err := s.pool.Exec(ctx, q, link.TaskID, link.System, link.DialogID, link.Title,
-		link.LastMessageID, nullTime(link.LastSyncAt), nullTime(link.LinkedAt))
+		link.ExternalTaskID, link.LastMessageID, nullTime(link.LastSyncAt), nullTime(link.LinkedAt))
 	if err != nil {
 		return fmt.Errorf("закрепление чата %s за задачей %s: %w", link.DialogID, link.TaskID, err)
 	}
@@ -217,7 +219,7 @@ func (s *Store) ChatLinks(ctx context.Context, taskID string) ([]domain.ChatLink
 			synced, linked *time.Time
 		)
 		err := rows.Scan(&l.TaskID, &l.System, &l.DialogID, &l.Title,
-			&l.LastMessageID, &synced, &linked)
+			&l.ExternalTaskID, &l.LastMessageID, &synced, &linked)
 		if err != nil {
 			return nil, fmt.Errorf("чтение чатов задачи %s: %w", taskID, err)
 		}

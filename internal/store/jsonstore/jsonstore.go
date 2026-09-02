@@ -184,11 +184,12 @@ func (s *Store) LinkChat(ctx context.Context, link domain.ChatLink) error {
 		if existing.TaskID != link.TaskID || existing.System != link.System || existing.DialogID != link.DialogID {
 			continue
 		}
-		// Присваивается одна подпись, а не связь целиком. Курсор и дата
+		// Присваиваются поля выбора, а не связь целиком. Курсор и дата
 		// закрепления принадлежат не тому, кто выбирает чат: перезапись связью из
 		// аргумента откатила бы курсор в ноль, и вся переписка приехала бы вторым
 		// экземпляром.
 		s.st.ChatLinks[i].Title = link.Title
+		s.st.ChatLinks[i].ExternalTaskID = link.ExternalTaskID
 		return s.persist()
 	}
 

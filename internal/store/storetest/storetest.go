@@ -182,10 +182,11 @@ func testChatLink(t *testing.T, st store.Store) {
 
 	want := domain.ChatLink{
 		TaskID: "aura", System: domain.SystemBitrix, DialogID: "chat12",
-		Title:         "АУРА — внедрение",
-		LastMessageID: 46,
-		LastSyncAt:    utc(2026, time.August, 27),
-		LinkedAt:      utc(2026, time.August, 20),
+		Title:          "АУРА — внедрение",
+		ExternalTaskID: "4",
+		LastMessageID:  46,
+		LastSyncAt:     utc(2026, time.August, 27),
+		LinkedAt:       utc(2026, time.August, 20),
 	}
 	link(t, st, want)
 	// Второй чат у той же задачи и тот же чат у другой задачи: ни то, ни другое
@@ -214,8 +215,19 @@ func testChatLink(t *testing.T, st store.Store) {
 		t.Errorf("ключ связи искажён: %+v", first)
 	case first.Title != want.Title:
 		t.Errorf("подпись = %q, хотели %q", first.Title, want.Title)
+	case first.ExternalTaskID != want.ExternalTaskID:
+		// Без неё по «chat12» не вернуться к задаче портала: связь «чат → задача»
+		// живёт в Bitrix, и, не сохранив её, реестр знает лишь номер диалога.
+		t.Errorf("задача портала = %q, хотели %q", first.ExternalTaskID, want.ExternalTaskID)
 	case first.LastMessageID != want.LastMessageID:
 		t.Errorf("курсор = %d, хотели %d", first.LastMessageID, want.LastMessageID)
+	}
+
+	// Чат без задачи портала — обычный случай, а не недозаполненная связь:
+	// обсуждение ведут и в отдельном групповом чате. Пустое поле обязано
+	// вернуться пустым, а не подставить чужой номер.
+	if second := got[1]; second.ExternalTaskID != "" {
+		t.Errorf("у чата без задачи портала появился номер %q", second.ExternalTaskID)
 	}
 	if !first.LastSyncAt.Equal(want.LastSyncAt) {
 		t.Errorf("дата чтения = %v, хотели %v", first.LastSyncAt, want.LastSyncAt)
@@ -280,12 +292,16 @@ func testChatCursor(t *testing.T, st store.Store) {
 	// принесла бы заново всю переписку, вторым экземпляром каждого сообщения.
 	link(t, st, domain.ChatLink{
 		TaskID: "aura", System: domain.SystemBitrix, DialogID: "chat12",
-		Title: "АУРА — внедрение", LinkedAt: utc(2026, time.August, 28),
+		Title: "АУРА — внедрение", ExternalTaskID: "4", LinkedAt: utc(2026, time.August, 28),
 	})
 	after := onlyLink(t, st, "aura")
 	switch {
 	case after.Title != "АУРА — внедрение":
 		t.Errorf("подпись не обновилась: %q", after.Title)
+	case after.ExternalTaskID != "4":
+		// Задача портала обновляется вместе с подписью: обе — выбор человека.
+		// Курсор при этом не двигается, что проверяет следующая ветка.
+		t.Errorf("задача портала не обновилась: %q", after.ExternalTaskID)
 	case after.LastMessageID != 42:
 		t.Errorf("курсор сбился на %d, хотели 42", after.LastMessageID)
 	case !after.LastSyncAt.Equal(synced):

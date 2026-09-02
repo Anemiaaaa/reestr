@@ -147,12 +147,20 @@ func TestPinChat(t *testing.T) {
 		if err != nil {
 			t.Fatalf("создать задачу: %v", err)
 		}
-		got, err := s.PinChat(ctx, task.ID, domain.SystemBitrix, "chat12", "АУРА")
+		got, err := s.PinChat(ctx, domain.ChatLink{
+			TaskID: task.ID, System: domain.SystemBitrix,
+			DialogID: "chat12", Title: "АУРА", ExternalTaskID: "4",
+		})
 		if err != nil {
 			t.Fatalf("закрепить чат: %v", err)
 		}
 		if got.TaskID != task.ID || got.DialogID != "chat12" || got.Title != "АУРА" {
 			t.Errorf("связь %+v", got)
+		}
+		// Номер задачи портала обязан дойти до хранилища: без него по «chat12» не
+		// вернуться к задаче, чей это чат.
+		if got.ExternalTaskID != "4" {
+			t.Errorf("задача портала = %q, хотели 4", got.ExternalTaskID)
 		}
 		if !got.LinkedAt.Equal(today) {
 			t.Errorf("дата закрепления %v, часы сервиса на %v", got.LinkedAt, today)
@@ -169,7 +177,9 @@ func TestPinChat(t *testing.T) {
 
 	t.Run("без задачи не проходит", func(t *testing.T) {
 		s := newService(t)
-		_, err := s.PinChat(context.Background(), "нет-такой", domain.SystemBitrix, "8", "")
+		_, err := s.PinChat(context.Background(), domain.ChatLink{
+			TaskID: "нет-такой", System: domain.SystemBitrix, DialogID: "8",
+		})
 		if !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("ошибка %v, ожидалась store.ErrNotFound", err)
 		}
@@ -177,9 +187,24 @@ func TestPinChat(t *testing.T) {
 
 	t.Run("пустое не проходит", func(t *testing.T) {
 		s := newService(t)
-		_, err := s.PinChat(context.Background(), "", "", "", "")
+		_, err := s.PinChat(context.Background(), domain.ChatLink{})
 		if !errors.Is(err, ErrInvalid) {
 			t.Errorf("ошибка %v, ожидалась ErrInvalid", err)
+		}
+	})
+
+	// Закрепление по задаче портала без настроенного Bitrix — отказ, а не связь
+	// с пустым чатом. Реестр при этом продолжает работать: задача создаётся,
+	// просто без закрепления, и решает это транспорт, а не сервис.
+	t.Run("задача портала без портала не проходит", func(t *testing.T) {
+		s := newService(t)
+		ctx := context.Background()
+
+		if _, err := s.PortalTask(ctx, "4"); !errors.Is(err, ErrInvalid) {
+			t.Errorf("ошибка %v, ожидалась ErrInvalid", err)
+		}
+		if _, err := s.PortalTask(ctx, "  "); !errors.Is(err, ErrInvalid) {
+			t.Errorf("пустой номер задачи портала: ошибка %v, ожидалась ErrInvalid", err)
 		}
 	})
 }

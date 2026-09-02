@@ -133,18 +133,76 @@ func (s *Service) PortalChats(ctx context.Context, limit int) ([]bitrix.Chat, er
 	return out, nil
 }
 
+// PortalTasks отдаёт задачи портала, пригодные для закрепления.
+//
+// Метод есть, потому что чаты задач в PortalChats не попадают вообще:
+// im.recent.list показывает недавние чаты владельца вебхука, а чат задачи в эту
+// ленту не входит. Найти его можно только через карточку задачи.
+//
+// Без настроенного портала — пустой список и никакой ошибки, ровно как в
+// PortalChats: различать «портала нет» и «портал не ответил» должен транспорт.
+func (s *Service) PortalTasks(ctx context.Context, limit int) ([]bitrix.Task, error) {
+	if !s.PortalConfigured() {
+		return nil, nil
+	}
+	return s.portal.Tasks(ctx, limit)
+}
+
+// PortalTask отдаёт задачу портала, у которой есть чат, пригодный к
+// закреплению.
+//
+// Отдельно от закрепления намеренно. Задача реестра создаётся и закрепляется
+// разными вызовами, а спросить у портала нужно раньше их обоих: узнав об
+// отсутствии чата после CreateTask, транспорт остался бы с созданной задачей и
+// с ошибкой в ответе, и повторная отправка формы завела бы дубль.
+//
+// Чат берётся у портала здесь, а не приходит из браузера, по той же причине, по
+// которой оттуда не приходит подпись: браузер называет задачу, а какой у неё
+// чат — знает портал. Присланному номеру чата пришлось бы верить на слово.
+func (s *Service) PortalTask(ctx context.Context, portalTaskID string) (bitrix.Task, error) {
+	portalTaskID = strings.TrimSpace(portalTaskID)
+	if portalTaskID == "" {
+		return bitrix.Task{}, fmt.Errorf("не указана задача портала: %w", ErrInvalid)
+	}
+	if !s.PortalConfigured() {
+		return bitrix.Task{}, fmt.Errorf("Bitrix24 не настроен: %w", ErrInvalid)
+	}
+
+	portal, err := s.portal.TaskChat(ctx, portalTaskID)
+	if err != nil {
+		// «Нет такой задачи» — про присланный номер, а не про портал: он ответил
+		// исправно. Без этой ветки транспорт назвал бы опечатку сбоем шлюза.
+		if errors.Is(err, bitrix.ErrTaskNotFound) {
+			return bitrix.Task{}, fmt.Errorf("%w: %w", err, ErrInvalid)
+		}
+		return bitrix.Task{}, err
+	}
+	// У задачи портала чат заводится не при постановке, а при первом событии по
+	// ней. Отказ здесь честнее пустой связи: закреплять нечего, и подтяжке потом
+	// было бы нечего читать.
+	if portal.DialogID() == "" {
+		return bitrix.Task{}, fmt.Errorf("у задачи %s нет чата: %w", portalTaskID, ErrInvalid)
+	}
+	return portal, nil
+}
+
 // PinChat закрепляет за задачей чат внешней системы.
+//
+// Связью, а не списком строк: полей выбора уже четыре, и позиционные аргументы
+// на четвёртом перестают читаться. Курсор и дата закрепления из аргумента не
+// берутся — их выставляет либо сам метод, либо подтяжка.
 //
 // Курсор синхронизации здесь не выставляется и не сдвигается: закрепление — это
 // выбор человека, а курсор принадлежит подтяжке. Повторный выбор того же чата
 // уточняет подпись и не заставляет перечитывать переписку заново.
-func (s *Service) PinChat(ctx context.Context, taskID, system, dialogID, title string) (domain.ChatLink, error) {
+func (s *Service) PinChat(ctx context.Context, in domain.ChatLink) (domain.ChatLink, error) {
 	link := domain.ChatLink{
-		TaskID:   strings.TrimSpace(taskID),
-		System:   strings.TrimSpace(system),
-		DialogID: strings.TrimSpace(dialogID),
-		Title:    strings.TrimSpace(title),
-		LinkedAt: s.now(),
+		TaskID:         strings.TrimSpace(in.TaskID),
+		System:         strings.TrimSpace(in.System),
+		DialogID:       strings.TrimSpace(in.DialogID),
+		Title:          strings.TrimSpace(in.Title),
+		ExternalTaskID: strings.TrimSpace(in.ExternalTaskID),
+		LinkedAt:       s.now(),
 	}
 	if link.System == "" {
 		link.System = domain.SystemBitrix
@@ -169,7 +227,8 @@ func (s *Service) PinChat(ctx context.Context, taskID, system, dialogID, title s
 		return domain.ChatLink{}, err
 	}
 	s.log.Info("чат закреплён",
-		"задача", link.TaskID, "система", link.System, "чат", link.DialogID)
+		"задача", link.TaskID, "система", link.System, "чат", link.DialogID,
+		"задача портала", link.ExternalTaskID)
 	return link, nil
 }
 
