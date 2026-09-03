@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -98,6 +99,17 @@ func run() error {
 		if err := fill(ctx, st, svc, log); err != nil {
 			return fmt.Errorf("заполнение хранилища: %w", err)
 		}
+	}
+
+	// Ночная пересборка живёт столько же, сколько сервер: контекст запуска
+	// отменяется сигналом, и незавершённый проход обрывается вместе с ним.
+	if r, err := rebuilder(svc, log); err != nil {
+		// Опечатка в расписании — ошибка запуска, а не повод молча работать без
+		// него. Реестр, который «почему-то не обновляется по ночам», разбирают
+		// неделю.
+		return err
+	} else if r != nil {
+		go r.Run(ctx)
 	}
 
 	assets, err := ui(*dir)
@@ -230,4 +242,38 @@ func fill(ctx context.Context, st store.Store, svc *service.Service, log *slog.L
 	}
 	log.Info("хранилище заполнено", "задача", task.ID, "источников", len(sources))
 	return nil
+}
+
+// rebuilder собирает ночную пересборку из настроек.
+//
+// Пустое REESTR_REBUILD_AT означает «не пересобирать по ночам», и это законный
+// режим: на чужой машине, куда реестр принесли показать, ночной проход не
+// нужен, а с платной моделью он ещё и тратил бы деньги.
+//
+// Всё остальное — ошибка запуска. Расписание либо задано верно, либо его нет:
+// реестр, который «почему-то не обновляется по ночам» из-за опечатки в поясе,
+// разбирают неделю.
+func rebuilder(svc *service.Service, log *slog.Logger) (*service.Rebuilder, error) {
+	at := strings.TrimSpace(config.Env("REESTR_REBUILD_AT", ""))
+	if at == "" {
+		log.Info("ночная пересборка выключена")
+		return nil, nil
+	}
+
+	t, err := time.Parse("15:04", at)
+	if err != nil {
+		return nil, fmt.Errorf("REESTR_REBUILD_AT=%q: нужно ЧЧ:ММ", at)
+	}
+
+	// Пояс берётся из настроек, а не из часов сервера. «20:00 по Москве» обязано
+	// остаться восемью вечера и на сервере, живущем по Гринвичу, — а сервер
+	// заказчика именно такой.
+	name := config.Env("REESTR_TZ", "Europe/Moscow")
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, fmt.Errorf("REESTR_TZ=%q: %w", name, err)
+	}
+
+	log.Info("ночная пересборка включена", "время", at, "пояс", name)
+	return service.NewRebuilder(svc, t.Hour(), t.Minute(), loc), nil
 }
