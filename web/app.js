@@ -698,10 +698,18 @@ async function addSource() {
         ["correspondence", "Переписка"],
         ["spec", "ТЗ"],
         ["audit", "Аудит"],
+        ["bridge", "Сводка с Капитанского мостика"],
+        ["doc", "Документ"],
         ["note", "Заметка"],
       ],
     },
     { name: "title", label: "Название", required: true, hint: "Переписка в Битрикс24, июнь" },
+    // Автор и дата события — для материала, который сам про себя не
+    // рассказывает. У сводки с мостика дата планёрки известна человеку, а из
+    // текста её не вычитать; пустой она и останется, а не подменится днём
+    // загрузки.
+    { name: "author", label: "Автор", hint: "кто это сказал или составил" },
+    { name: "occurredAt", label: "Когда это было", kind: "date" },
     { name: "body", label: "Текст", kind: "text", required: true, hint: "Вставьте выгрузку целиком" },
   ]);
   if (!got) return;
@@ -711,8 +719,12 @@ async function addSource() {
       method: "POST",
       body: JSON.stringify(got),
     });
-    await api("/api/tasks/" + encodeURIComponent(state.current) + "/slice/rebuild", { method: "POST" });
+    // Новый материал — повод пересобрать: смысл загрузки в том, чтобы срез
+    // изменился, а не в том, чтобы файл лёг в список.
+    const res = await api("/api/tasks/" + encodeURIComponent(state.current) + "/slice/rebuild",
+      { method: "POST" });
     await open(state.current);
+    flash(res.text, res.built ? "done" : "warn");
   } catch (e) {
     flash(e.message);
   }

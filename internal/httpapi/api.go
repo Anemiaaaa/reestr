@@ -368,6 +368,14 @@ type sourceRequest struct {
 	Kind  string `json:"kind"`
 	Title string `json:"title"`
 	Body  string `json:"body"`
+
+	// Author и OccurredAt заполняются у материала, который не сам про себя
+	// рассказывает: у сводки с мостика автор и дата планёрки известны человеку,
+	// а из текста их не вычитать. Пусто — обычный случай, и подставлять на их
+	// место сегодняшний день и имя PM нельзя: срез отличает дату события от
+	// даты загрузки.
+	Author     string `json:"author"`
+	OccurredAt date   `json:"occurredAt"`
 }
 
 func (s *Server) addSource(w http.ResponseWriter, r *http.Request) {
@@ -377,10 +385,12 @@ func (s *Server) addSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	src, err := s.svc.AddSource(r.Context(), domain.Source{
-		TaskID: r.PathValue("id"),
-		Kind:   domain.SourceKind(req.Kind),
-		Title:  req.Title,
-		Body:   req.Body,
+		TaskID:     r.PathValue("id"),
+		Kind:       domain.SourceKind(req.Kind),
+		Title:      req.Title,
+		Body:       req.Body,
+		Author:     req.Author,
+		OccurredAt: req.OccurredAt.Time,
 	})
 	if err != nil {
 		s.fail(w, r, err)
