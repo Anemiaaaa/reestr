@@ -169,11 +169,11 @@ func (s *Service) PortalChats(ctx context.Context, limit int) ([]bitrix.Chat, er
 //
 // Без настроенного портала — пустой список и никакой ошибки, ровно как в
 // PortalChats: различать «портала нет» и «портал не ответил» должен транспорт.
-func (s *Service) PortalTasks(ctx context.Context, limit int) ([]bitrix.Task, error) {
+func (s *Service) PortalTasks(ctx context.Context, query string, limit int) ([]bitrix.Task, error) {
 	if !s.PortalConfigured() {
 		return nil, nil
 	}
-	return s.portal.Tasks(ctx, limit)
+	return s.portal.Tasks(ctx, query, limit)
 }
 
 // PortalTask отдаёт задачу портала, у которой есть чат, пригодный к

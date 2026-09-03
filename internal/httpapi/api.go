@@ -202,7 +202,10 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 // именно его. Удалить рабочий путь ради того, чтобы его сегодня не показывают,
 // значило бы написать его заново на первую же такую задачу.
 func (s *Server) portalTasks(w http.ResponseWriter, r *http.Request) {
-	list, err := s.svc.PortalTasks(r.Context(), 50)
+	// Без запроса — свежие задачи, чтобы форма открывалась сразу и было из чего
+	// выбирать. С запросом — поиск по всему порталу: задач там почти десять
+	// тысяч, и нужная чаще всего не из последней полусотни.
+	list, err := s.svc.PortalTasks(r.Context(), r.URL.Query().Get("q"), 100)
 	if err != nil {
 		s.fail(w, r, err)
 		return

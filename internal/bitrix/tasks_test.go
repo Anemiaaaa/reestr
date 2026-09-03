@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ func TestTasks(t *testing.T) {
 		return 200, tasksJSON
 	})
 
-	list, err := c.Tasks(context.Background(), 50)
+	list, err := c.Tasks(context.Background(), "", 50)
 	if err != nil {
 		t.Fatalf("Tasks: %v", err)
 	}
@@ -115,7 +116,7 @@ func TestTasksRedactsTitle(t *testing.T) {
 
 	c := serve(t, func(string, url.Values) (int, string) { return 200, body })
 
-	list, err := c.Tasks(context.Background(), 10)
+	list, err := c.Tasks(context.Background(), "", 10)
 	if err != nil {
 		t.Fatalf("Tasks: %v", err)
 	}
@@ -209,4 +210,94 @@ func hasSelect(form url.Values, field string) bool {
 		}
 	}
 	return false
+}
+
+// TestTasksSearch: поиск идёт на портале, а не по загруженному списку. Задач
+// там почти десять тысяч, и нужная почти никогда не из последней полусотни —
+// выгружать их все ради подстроки значило бы гонять мегабайты на каждое
+// открытие формы.
+func TestTasksSearch(t *testing.T) {
+	t.Parallel()
+
+	var got url.Values
+	c := serve(t, func(_ string, form url.Values) (int, string) {
+		got = form
+		return 200, tasksJSON
+	})
+
+	if _, err := c.Tasks(context.Background(), "  Асият  ", 50); err != nil {
+		t.Fatalf("Tasks: %v", err)
+	}
+	// Пробелы по краям срезаются: поле поиска их набирает само.
+	if q := got.Get("filter[%TITLE]"); q != "Асият" {
+		t.Errorf("фильтр по названию = %q", q)
+	}
+
+	// Пустой запрос фильтра не ставит: тогда список — просто свежие задачи.
+	if _, err := c.Tasks(context.Background(), "   ", 50); err != nil {
+		t.Fatalf("Tasks без запроса: %v", err)
+	}
+	if _, ok := got["filter[%TITLE]"]; ok {
+		t.Errorf("пустой запрос превратился в фильтр: %v", got)
+	}
+}
+
+// TestTasksPaging: портал отдаёт не больше полусотни за вызов и кладёт смещение
+// следующей страницы в конверт. Одной страницей обходиться нельзя.
+func TestTasksPaging(t *testing.T) {
+	t.Parallel()
+
+	var starts []string
+	page := 0
+	c := serve(t, func(_ string, form url.Values) (int, string) {
+		starts = append(starts, form.Get("start"))
+		page++
+		// Две страницы по одной задаче, потом конец списка без смещения.
+		if page < 3 {
+			return 200, `{"result":{"tasks":[{"id":"` + strconv.Itoa(page) +
+				`","title":"Задача","chatId":"7","status":"2"}]},"next":` + strconv.Itoa(page*50) + `}`
+		}
+		return 200, `{"result":{"tasks":[]}}`
+	})
+
+	list, err := c.Tasks(context.Background(), "", 50)
+	if err != nil {
+		t.Fatalf("Tasks: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("задач %d, хотели 2: %+v", len(list), list)
+	}
+	// Первая страница без смещения, дальше — то, что назвал портал.
+	want := []string{"", "50", "100"}
+	if len(starts) != len(want) {
+		t.Fatalf("страниц %d, хотели %d: %v", len(starts), len(want), starts)
+	}
+	for i, s := range want {
+		if starts[i] != s {
+			t.Errorf("страница %d: start=%q, хотели %q", i, starts[i], s)
+		}
+	}
+}
+
+// TestTasksStopsAtLimit: набрав нужное число, за следующей страницей не идём —
+// поход в чужой сервис не бесплатный.
+func TestTasksStopsAtLimit(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	c := serve(t, func(string, url.Values) (int, string) {
+		calls++
+		return 200, tasksJSON
+	})
+
+	list, err := c.Tasks(context.Background(), "", 2)
+	if err != nil {
+		t.Fatalf("Tasks: %v", err)
+	}
+	if len(list) != 2 {
+		t.Errorf("задач %d, хотели 2", len(list))
+	}
+	if calls != 1 {
+		t.Errorf("походов в портал %d, хотели 1", calls)
+	}
 }

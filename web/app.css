@@ -728,3 +728,24 @@ h1 {
   .btn, .tab, .item { transition: none; }
   .done, .err { animation: none; }
 }
+
+/* --- поиск в списке --- */
+
+.field__search {
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 9px;
+  border: 1px solid var(--line-firm);
+  border-radius: 4px;
+  margin-bottom: 5px;
+  width: 100%;
+}
+.field__search:focus { outline: 2px solid var(--blue); outline-offset: -1px; }
+
+/* Список показывается развёрнутым, а не выпадашкой: с поиском над ним видно
+   сразу, сколько всего подошло и что именно. */
+.field__list {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+}

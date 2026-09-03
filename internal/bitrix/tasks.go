@@ -71,12 +71,58 @@ func (t Task) DialogID() string {
 // проверено на живом портале: в его выдаче только личные переписки и служебные
 // групповые чаты. Чат задачи доступен, но найти его можно лишь через карточку
 // задачи, где он лежит полем chatId.
-func (c *Client) Tasks(ctx context.Context, limit int) ([]Task, error) {
+// Задач в портале тысячи, и берутся они страницами: портал отдаёт не больше
+// полусотни за вызов и кладёт смещение следующей страницы в конверт. Одной
+// страницей обходиться нельзя — это полсотни самых свежих задач, а срез чаще
+// всего нужен по той, что идёт третий месяц.
+func (c *Client) Tasks(ctx context.Context, query string, limit int) ([]Task, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 
+	var tasks []Task
+	start := 0
+	for page := 0; page < taskMaxPages; page++ {
+		batch, next, err := c.tasksPage(ctx, query, start)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, batch...)
+
+		// Конец списка портал показывает отсутствием смещения. Пустая страница —
+		// та же новость, но сказанная иначе, и полагаться только на смещение
+		// нельзя: цикл обязан кончиться при любом поведении портала.
+		if len(tasks) >= limit || next == nil || len(batch) == 0 {
+			break
+		}
+		start = *next
+	}
+	if len(tasks) > limit {
+		tasks = tasks[:limit]
+	}
+
+	// Портал уже отсортировал, но полагаться на это нельзя: order — просьба, а
+	// не обещание, и на следующей версии портала список может приехать иначе.
+	sort.SliceStable(tasks, func(i, j int) bool {
+		return tasks[i].CreatedAt.After(tasks[j].CreatedAt)
+	})
+	return tasks, nil
+}
+
+// taskMaxPages — предел страниц за один запрос списка. Нужен не ради скорости,
+// а чтобы цикл был конечным: сломавшееся смещение иначе гоняло бы нас по кругу.
+const taskMaxPages = 40
+
+// tasksPage читает одну страницу списка и возвращает смещение следующей.
+func (c *Client) tasksPage(ctx context.Context, query string, start int) ([]Task, *int, error) {
 	params := url.Values{}
+	// Поиск идёт на портале, а не в браузере: задач почти десять тысяч, и
+	// выгружать их все ради подстроки — это мегабайты по сети на каждое
+	// открытие формы. Проценты вокруг значения — синтаксис портала для «часть
+	// названия».
+	if query = strings.TrimSpace(query); query != "" {
+		params.Set("filter[%TITLE]", query)
+	}
 	// Поля перечислены явно: без select портал присылает карточку целиком, а из
 	// неё нужны семь полей из семидесяти.
 	for i, f := range []string{
@@ -88,12 +134,16 @@ func (c *Client) Tasks(ctx context.Context, limit int) ([]Task, error) {
 	// Свежие сверху — тот же порядок, что и у списка чатов: сверху то, чем
 	// занимаются сейчас.
 	params.Set("order[ID]", "DESC")
+	if start > 0 {
+		params.Set("start", strconv.Itoa(start))
+	}
 
 	var out struct {
 		Tasks []taskItem `json:"tasks"`
 	}
-	if err := c.Call(ctx, "tasks.task.list", params, &out); err != nil {
-		return nil, err
+	env, err := c.call(ctx, "tasks.task.list", params, &out)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	tasks := make([]Task, 0, len(out.Tasks))
@@ -101,17 +151,8 @@ func (c *Client) Tasks(ctx context.Context, limit int) ([]Task, error) {
 		if t, ok := it.task(); ok {
 			tasks = append(tasks, t)
 		}
-		if len(tasks) >= limit {
-			break
-		}
 	}
-
-	// Портал уже отсортировал, но полагаться на это нельзя: order — просьба, а
-	// не обещание, и на следующей версии портала список может приехать иначе.
-	sort.SliceStable(tasks, func(i, j int) bool {
-		return tasks[i].CreatedAt.After(tasks[j].CreatedAt)
-	})
-	return tasks, nil
+	return tasks, env.Next, nil
 }
 
 // taskItem — задача в ответе tasks.task.list.

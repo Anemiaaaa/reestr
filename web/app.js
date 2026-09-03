@@ -647,6 +647,52 @@ function ask(title, fields) {
     let input;
     if (f.kind === "text") {
       input = el("textarea", { id, required: f.required, placeholder: f.hint });
+    } else if (f.kind === "search") {
+      // Поиск идёт на портале, а не по загруженному списку: задач там почти
+      // десять тысяч, и нужная почти никогда не из последней сотни. Выгружать
+      // их все ради подстроки — мегабайты по сети на каждое открытие формы.
+      input = el("select", { id, size: 8, class: "field__list" },
+        f.options.map(o => el("option", { value: o[0], text: o[1] })));
+
+      const hint = el("div", { class: "field__hint", text: f.note || "" });
+
+      // Пауза перед запросом: иначе на каждую букву идёт поход в чужой сервис.
+      let timer = null;
+      const search = el("input", {
+        id: id + "-q",
+        type: "search",
+        class: "field__search",
+        placeholder: "часть названия задачи в Bitrix24",
+        // Enter здесь означает «нашёл», а не «сохранить»: отправка формы по
+        // нему потеряла бы остальные поля.
+        onkeydown: ev => { if (ev.key === "Enter") ev.preventDefault(); },
+        oninput: () => {
+          clearTimeout(timer);
+          const q = search.value.trim();
+          hint.textContent = q ? "ищу…" : (f.note || "");
+          timer = setTimeout(async () => {
+            try {
+              const found = await f.search(q);
+              input.replaceChildren(...found.map(o => el("option", { value: o[0], text: o[1] })));
+              // Выбор сбрасывается вместе со списком: иначе форма отправила бы
+              // задачу, которой человек уже не видит.
+              if (f.onChange) f.onChange(input.value, inputs);
+              hint.textContent = q
+                ? (found.length ? "нашлось: " + found.length : "ничего не найдено")
+                : (f.note || "");
+            } catch (e) {
+              hint.textContent = "поиск не удался: " + e.message;
+            }
+          }, 350);
+        },
+      });
+
+      inputs[f.name] = input;
+      if (f.onChange) input.addEventListener("change", () => f.onChange(input.value, inputs));
+      body.append(el("div", { class: "field" },
+        el("label", { class: "field__label", for: id + "-q", text: f.label }),
+        search, input, hint));
+      continue;
     } else if (f.kind === "select") {
       input = el("select", { id }, f.options.map(o => el("option", { value: o[0], text: o[1] })));
     } else {
@@ -783,9 +829,16 @@ async function addTask() {
   const taskField = {
     name: "bitrixTaskId",
     label: "Задача Bitrix24",
-    kind: "select",
+    kind: "search",
     options: [["", "без задачи портала"]],
     note: "Bitrix24 не настроен: задача создастся без чата",
+    // search спрашивает портал заново. Пустой запрос — свежие задачи: форма
+    // должна открываться сразу и с чем-то в списке.
+    async search(q) {
+      const opts = await api("/api/bitrix/tasks" + (q ? "?q=" + encodeURIComponent(q) : ""));
+      portal = opts.tasks || [];
+      return [["", "без задачи портала"]].concat(portal.map(t => [t.id, t.label]));
+    },
     onChange(id, inputs) {
       const chosen = portal.find(t => t.id === id);
       if (!chosen) return;
