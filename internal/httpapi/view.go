@@ -740,3 +740,74 @@ func newLinks(list []domain.ChatLink) []chat {
 	}
 	return out
 }
+
+// --- история версий ---
+
+// sliceRef — строка списка версий.
+type sliceRef struct {
+	Version int    `json:"version"`
+	BuiltAt string `json:"builtAt"`
+	Label   string `json:"label"`
+}
+
+func newSliceRefs(list []domain.SliceRef) []sliceRef {
+	out := make([]sliceRef, 0, len(list))
+	for _, r := range list {
+		v := sliceRef{
+			Version: r.Version,
+			BuiltAt: r.BuiltAt.Format("02.01.2006, 15:04"),
+		}
+		v.Label = fmt.Sprintf("v%d · %s", r.Version, v.BuiltAt)
+		out = append(out, v)
+	}
+	return out
+}
+
+// change — одно различие между версиями.
+type sliceChange struct {
+	Section string `json:"section"`
+	Field   string `json:"field"`
+	Kind    string `json:"kind"`
+	Label   string `json:"label"`
+	Before  string `json:"before,omitempty"`
+	After   string `json:"after,omitempty"`
+}
+
+// diff — ответ сравнения двух версий.
+//
+// Числа и подписи посчитаны здесь, а не в браузере: «изменений нет» — это
+// содержательный ответ, а не пустой список, и решать, как его назвать, должен
+// один слой.
+type diff struct {
+	Before  sliceRef      `json:"before"`
+	After   sliceRef      `json:"after"`
+	Text    string        `json:"text"`
+	Changes []sliceChange `json:"changes"`
+}
+
+func newDiff(before, after domain.Slice, changes []domain.SliceChange) diff {
+	d := diff{
+		Before:  newSliceRefs([]domain.SliceRef{before.Ref()})[0],
+		After:   newSliceRefs([]domain.SliceRef{after.Ref()})[0],
+		Changes: make([]sliceChange, 0, len(changes)),
+	}
+	for _, c := range changes {
+		d.Changes = append(d.Changes, sliceChange{
+			Section: c.Section, Field: c.Field,
+			Kind: string(c.Kind), Label: c.Kind.Label(),
+			Before: c.Before, After: c.After,
+		})
+	}
+
+	if len(changes) == 0 {
+		// Совпадение версий — ответ, а не пустота: пересборка после нового
+		// материала могла ничего не поменять в выводах.
+		d.Text = fmt.Sprintf("версии %d и %d совпадают по содержанию",
+			before.Version, after.Version)
+	} else {
+		d.Text = fmt.Sprintf("между версиями %d и %d — %s",
+			before.Version, after.Version,
+			ru.Count(len(changes), "различие", "различия", "различий"))
+	}
+	return d
+}

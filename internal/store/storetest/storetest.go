@@ -19,6 +19,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -56,6 +57,7 @@ func Run(t *testing.T, open New) {
 		{"Processes", testProcesses},
 		{"Slices", testSlices},
 		{"SlicesUsing", testSlicesUsing},
+		{"SliceVersions", testSliceVersions},
 		{"DuplicateSource", testDuplicateSource},
 		{"ZeroDates", testZeroDates},
 	} {
@@ -1149,4 +1151,72 @@ func same(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// testSliceVersions: история версий — то, ради чего срез вообще версионируется.
+// Старая версия обязана оставаться читаемой целиком: она объясняется тем
+// материалом, который был у неё на руках, и пересобрать её заново нельзя.
+func testSliceVersions(t *testing.T, st store.Store) {
+	ctx := context.Background()
+
+	create(t, st, task("aura", utc(2026, time.June, 1)))
+	create(t, st, task("other", utc(2026, time.June, 2)))
+
+	// У задачи без единой сборки список пуст, и это не ошибка: спросить про
+	// историю можно у любой задачи.
+	if list, err := st.SliceVersions(ctx, "aura"); err != nil || len(list) != 0 {
+		t.Errorf("версии несобранной задачи: %d (%v)", len(list), err)
+	}
+	if _, err := st.SliceVersion(ctx, "aura", 1); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("несуществующая версия: ошибка %v, хотели ErrNotFound", err)
+	}
+
+	for _, v := range []int{1, 2, 3} {
+		sl := domain.Slice{
+			TaskID:  "aura",
+			Version: v,
+			BuiltAt: utc(2026, time.August, v),
+			Status:  domain.Status{Stage: domain.Quoted("в работе", "", "")},
+		}
+		sl.Passport.Title = domain.Quoted(fmt.Sprintf("версия %d", v), "", "")
+		if err := st.SaveSlice(ctx, sl); err != nil {
+			t.Fatalf("сохранить версию %d: %v", v, err)
+		}
+	}
+	// Чужая задача в историю не попадает.
+	other := domain.Slice{TaskID: "other", Version: 1, BuiltAt: utc(2026, time.August, 9)}
+	if err := st.SaveSlice(ctx, other); err != nil {
+		t.Fatalf("сохранить чужую версию: %v", err)
+	}
+
+	list, err := st.SliceVersions(ctx, "aura")
+	if err != nil {
+		t.Fatalf("SliceVersions: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("версий %d, хотели 3: %+v", len(list), list)
+	}
+	// Свежие первыми: история читается сверху вниз, от того, что есть сейчас.
+	if list[0].Version != 3 || list[2].Version != 1 {
+		t.Errorf("порядок версий: %d, %d, %d", list[0].Version, list[1].Version, list[2].Version)
+	}
+	if !list[0].BuiltAt.Equal(utc(2026, time.August, 3)) {
+		t.Errorf("дата сборки = %v", list[0].BuiltAt)
+	}
+	if list[0].TaskID != "aura" {
+		t.Errorf("задача в ссылке = %q", list[0].TaskID)
+	}
+
+	// Конкретная версия читается целиком, а не подменяется последней: иначе
+	// сравнение «было → стало» сравнивало бы срез сам с собой.
+	second, err := st.SliceVersion(ctx, "aura", 2)
+	if err != nil {
+		t.Fatalf("SliceVersion: %v", err)
+	}
+	if second.Version != 2 || second.Passport.Title.Text != "версия 2" {
+		t.Errorf("прочитана не та версия: %d, %q", second.Version, second.Passport.Title.Text)
+	}
+	if !second.BuiltAt.Equal(utc(2026, time.August, 2)) {
+		t.Errorf("дата сборки версии 2 = %v", second.BuiltAt)
+	}
 }

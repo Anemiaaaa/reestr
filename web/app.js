@@ -531,6 +531,7 @@ function render() {
     ["slice", "Срез", null, () => drawSlice(b.slice)],
     ["flows", "Схемы", b.diagrams.length, () => drawDiagrams(b.diagrams)],
     ["sources", "Источники", b.sources.length, () => drawSources(b.sources)],
+    ["versions", "Версии", b.versions.length, () => drawVersions(b.versions)],
     ["facts", "Факты", b.facts, () => drawFacts(b.task.id)],
   ];
 
@@ -809,3 +810,82 @@ async function boot() {
 }
 
 boot();
+
+// --- версии ---
+
+// drawVersions рисует историю сборок.
+//
+// У каждой версии, кроме самой старой, есть кнопка сравнения с предыдущей.
+// Выбор двух версий из двух списков был бы гибче, но вопрос, который задают
+// почти всегда, один: «что изменилось с прошлого раза».
+function drawVersions(list) {
+  if (!list || !list.length) {
+    return el("div", { class: "empty", text: "Срез ещё не собирался." });
+  }
+
+  const box = el("div", { class: "versions" });
+  const out = el("div", { class: "diff" });
+
+  list.forEach((v, i) => {
+    const prev = list[i + 1];
+    const row = el("div", { class: "versions__row" },
+      el("span", { class: "versions__label", text: v.label }),
+      i === 0 ? el("span", { class: "crumb", text: "текущая" }) : null,
+      prev
+        ? el("button", {
+          class: "btn btn--small",
+          type: "button",
+          text: "сравнить с v" + prev.version,
+          onclick: ev => compare(ev.currentTarget, prev.version, v.version, out),
+        })
+        : null);
+    box.append(row);
+  });
+
+  return el("div", {}, box, out);
+}
+
+// compare показывает различия между двумя версиями.
+async function compare(btn, a, b, out) {
+  btn.disabled = true;
+  try {
+    const url = "/api/tasks/" + encodeURIComponent(state.current) +
+      "/slices/compare?a=" + a + "&b=" + b;
+    const d = await api(url);
+    out.replaceChildren(drawDiff(d));
+  } catch (e) {
+    out.replaceChildren(el("div", { class: "err", text: e.message }));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function drawDiff(d) {
+  const box = el("div", {},
+    el("h3", { text: "Было v" + d.before.version + " → стало v" + d.after.version }),
+    el("div", { class: "crumb", text: d.text }));
+
+  if (!d.changes.length) return box;
+
+  // Различия сгруппированы по разделам среза: сравнение читают сверху вниз,
+  // как и сам срез.
+  const sections = new Map();
+  for (const c of d.changes) {
+    if (!sections.has(c.section)) sections.set(c.section, []);
+    sections.get(c.section).push(c);
+  }
+
+  for (const [section, changes] of sections) {
+    box.append(el("h4", { class: "diff__section", text: section }));
+    for (const c of changes) {
+      const row = el("div", { class: "diff__row diff__row--" + c.kind },
+        el("div", { class: "diff__field" }, c.field + " · " + c.label));
+      // Тексты идут через textContent: это чужой текст из переписки, и
+      // вставлять его разметкой нельзя ни при каких обстоятельствах.
+      if (c.before) row.append(el("div", { class: "diff__before", text: "было: " + c.before }));
+      if (c.after) row.append(el("div", { class: "diff__after", text: "стало: " + c.after }));
+      box.append(row);
+    }
+  }
+  return box;
+}

@@ -157,6 +157,18 @@ type Store interface {
 	// LatestSlice возвращает последнюю собранную версию среза.
 	LatestSlice(ctx context.Context, taskID string) (domain.Slice, error)
 
+	// SliceVersion возвращает конкретную версию среза; если её нет —
+	// ErrNotFound.
+	//
+	// Нужен сравнению «было → стало»: старая версия обязана объясняться тем
+	// материалом, который был у неё на руках, и читать её нужно целиком, а не
+	// пересобирать заново.
+	SliceVersion(ctx context.Context, taskID string, version int) (domain.Slice, error)
+
+	// SliceVersions перечисляет версии среза задачи, свежие первыми. У задачи
+	// без единой сборки — пустой список, а не ошибка.
+	SliceVersions(ctx context.Context, taskID string) ([]domain.SliceRef, error)
+
 	// NextSliceVersion возвращает номер, который получит следующая сборка.
 	NextSliceVersion(ctx context.Context, taskID string) (int, error)
 }

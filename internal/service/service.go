@@ -593,3 +593,44 @@ func sortRisks(rs []domain.Risk) []domain.Risk {
 	sort.SliceStable(out, func(i, j int) bool { return out[i].DaysImpact > out[j].DaysImpact })
 	return out
 }
+
+// SliceVersions возвращает историю версий среза задачи, свежие первыми.
+func (s *Service) SliceVersions(ctx context.Context, taskID string) ([]domain.SliceRef, error) {
+	if _, err := s.store.Task(ctx, taskID); err != nil {
+		return nil, err
+	}
+	return s.store.SliceVersions(ctx, taskID)
+}
+
+// SliceVersion возвращает конкретную версию среза.
+func (s *Service) SliceVersion(ctx context.Context, taskID string, version int) (domain.Slice, error) {
+	if version <= 0 {
+		return domain.Slice{}, fmt.Errorf("версия %d: %w", version, ErrInvalid)
+	}
+	return s.store.SliceVersion(ctx, taskID, version)
+}
+
+// CompareVersions отвечает, что изменилось между двумя версиями среза.
+//
+// Порядок аргументов не важен: версии всегда сравниваются от старой к новой.
+// «Было → стало» с перепутанными местами читалось бы как откат, которого не
+// было, и человек сделал бы обратный вывод из верных данных.
+func (s *Service) CompareVersions(ctx context.Context, taskID string, a, b int) (domain.Slice, domain.Slice, []domain.SliceChange, error) {
+	if a == b {
+		return domain.Slice{}, domain.Slice{}, nil,
+			fmt.Errorf("сравнивать версию %d саму с собой незачем: %w", a, ErrInvalid)
+	}
+	if a > b {
+		a, b = b, a
+	}
+
+	before, err := s.SliceVersion(ctx, taskID, a)
+	if err != nil {
+		return domain.Slice{}, domain.Slice{}, nil, err
+	}
+	after, err := s.SliceVersion(ctx, taskID, b)
+	if err != nil {
+		return domain.Slice{}, domain.Slice{}, nil, err
+	}
+	return before, after, domain.Compare(before, after), nil
+}

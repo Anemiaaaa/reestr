@@ -703,3 +703,48 @@ func isUnique(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
+
+// SliceVersion возвращает конкретную версию среза задачи.
+func (s *Store) SliceVersion(ctx context.Context, taskID string, version int) (domain.Slice, error) {
+	const q = `SELECT doc FROM slices WHERE task_id = $1 AND version = $2`
+
+	var out domain.Slice
+	err := s.pool.QueryRow(ctx, q, taskID, version).Scan(&out)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return domain.Slice{}, fmt.Errorf("версия %d задачи %s: %w", version, taskID, store.ErrNotFound)
+	case err != nil:
+		return domain.Slice{}, fmt.Errorf("чтение версии %d задачи %s: %w", version, taskID, err)
+	}
+	return out, nil
+}
+
+// SliceVersions перечисляет версии среза задачи, свежие первыми.
+//
+// Читаются плоские поля, а не JSONB целиком: список версий бывает длинным, и
+// разбирать документ ради даты сборки значило бы платить за то, чего не
+// показывают. Ради этого плоские поля рядом с документом и заведены.
+func (s *Store) SliceVersions(ctx context.Context, taskID string) ([]domain.SliceRef, error) {
+	const q = `SELECT task_id, version, built_at FROM slices
+	           WHERE task_id = $1 ORDER BY version DESC`
+
+	rows, err := s.pool.Query(ctx, q, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("список версий задачи %s: %w", taskID, err)
+	}
+	defer rows.Close()
+
+	var out []domain.SliceRef
+	for rows.Next() {
+		var (
+			ref   domain.SliceRef
+			built *time.Time
+		)
+		if err := rows.Scan(&ref.TaskID, &ref.Version, &built); err != nil {
+			return nil, fmt.Errorf("список версий задачи %s: %w", taskID, err)
+		}
+		ref.BuiltAt = timeOf(built)
+		out = append(out, ref)
+	}
+	return out, rows.Err()
+}

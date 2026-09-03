@@ -501,3 +501,48 @@ h1 {
 @media (prefers-reduced-motion: no-preference) {
   .bar__fill { transition: width .25s ease; }
 }
+
+/* --- история версий --- */
+
+.versions__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.versions__label { font-weight: 500; }
+
+.btn--small { padding: 3px 8px; font-size: 12px; }
+
+.diff { margin-top: 18px; }
+
+.diff__section {
+  margin: 16px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Полоса слева цветом вида изменения: пропавшее и появившееся различаются
+   раньше, чем читатель дойдёт до слов. */
+.diff__row {
+  padding: 6px 10px;
+  margin-bottom: 4px;
+  border-left: 3px solid var(--line);
+  border-radius: 0 4px 4px 0;
+  font-size: 13px;
+}
+
+.diff__row--added { border-left-color: #2f5c43; background: var(--green-bg); }
+.diff__row--removed { border-left-color: #8c2f2b; background: var(--red-bg); }
+.diff__row--edited { border-left-color: #7a5a13; background: var(--amber-bg); }
+
+.diff__field {
+  font-weight: 500;
+  margin-bottom: 3px;
+}
+
+.diff__before { color: #8c2f2b; }
+.diff__after { color: #2f5c43; }

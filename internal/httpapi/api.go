@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +45,9 @@ func New(svc *service.Service, web fs.FS, log *slog.Logger) *Server {
 	mux.HandleFunc("GET /api/tasks/{id}/slice", s.slice)
 	mux.HandleFunc("POST /api/tasks/{id}/slice/rebuild", s.rebuild)
 	mux.HandleFunc("POST /api/tasks/{id}/pull", s.pull)
+	mux.HandleFunc("GET /api/tasks/{id}/slices", s.versions)
+	mux.HandleFunc("GET /api/tasks/{id}/slices/compare", s.compare)
+	mux.HandleFunc("GET /api/tasks/{id}/slices/{version}", s.version)
 	mux.HandleFunc("GET /api/tasks/{id}/sources", s.taskSources)
 	mux.HandleFunc("POST /api/tasks/{id}/sources", s.addSource)
 	mux.HandleFunc("GET /api/tasks/{id}/processes", s.processes)
@@ -199,6 +203,11 @@ type board struct {
 	Sources  []source  `json:"sources"`
 	Chats    []chat    `json:"chats"`
 	Facts    int       `json:"facts"`
+
+	// Versions — история сборок. Едет вместе с доской, а не отдельным запросом:
+	// список короткий, а лишний поход в браузере — лишний повод показать
+	// страницу наполовину собранной.
+	Versions []sliceRef `json:"versions"`
 }
 
 func (s *Server) board(w http.ResponseWriter, r *http.Request) {
@@ -234,6 +243,11 @@ func (s *Server) board(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	versions, err := s.svc.SliceVersions(ctx, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
 
 	srcs := newSources(list)
 	out := board{
@@ -243,6 +257,7 @@ func (s *Server) board(w http.ResponseWriter, r *http.Request) {
 		Sources:  make([]source, 0, len(list)),
 		Chats:    newLinks(links),
 		Facts:    len(facts),
+		Versions: newSliceRefs(versions),
 	}
 	for _, src := range list {
 		out.Sources = append(out.Sources, newSource(src, false))
@@ -530,4 +545,62 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		s.log.Error("запрос не выполнен", "путь", r.URL.Path, "ошибка", err)
 	}
 	writeJSON(w, code, map[string]string{"error": err.Error()})
+}
+
+// versions отдаёт историю версий среза задачи.
+func (s *Server) versions(w http.ResponseWriter, r *http.Request) {
+	list, err := s.svc.SliceVersions(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newSliceRefs(list))
+}
+
+// version отдаёт конкретную версию среза целиком.
+//
+// Старая версия читается из хранилища, а не пересобирается: она обязана
+// объясняться тем материалом, который был у неё на руках. Пересборка показала
+// бы сегодняшние выводы под вчерашним номером.
+func (s *Server) version(w http.ResponseWriter, r *http.Request) {
+	v, err := strconv.Atoi(r.PathValue("version"))
+	if err != nil {
+		s.fail(w, r, fmt.Errorf("номер версии %q: %w", r.PathValue("version"), service.ErrInvalid))
+		return
+	}
+
+	ctx, id := r.Context(), r.PathValue("id")
+	sl, err := s.svc.SliceVersion(ctx, id, v)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	t, err := s.svc.Task(ctx, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	list, err := s.svc.Sources(ctx, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newSlice(sl, t, list, s.svc.Now()))
+}
+
+// compare отвечает, что изменилось между двумя версиями среза.
+func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
+	a, errA := strconv.Atoi(r.URL.Query().Get("a"))
+	b, errB := strconv.Atoi(r.URL.Query().Get("b"))
+	if errA != nil || errB != nil {
+		s.fail(w, r, fmt.Errorf("нужны номера двух версий: %w", service.ErrInvalid))
+		return
+	}
+
+	before, after, changes, err := s.svc.CompareVersions(r.Context(), r.PathValue("id"), a, b)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newDiff(before, after, changes))
 }

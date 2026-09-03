@@ -542,3 +542,31 @@ func (s *Store) NextSliceVersion(_ context.Context, taskID string) (int, error) 
 	}
 	return max + 1, nil
 }
+
+// SliceVersion возвращает конкретную версию среза задачи.
+func (s *Store) SliceVersion(_ context.Context, taskID string, version int) (domain.Slice, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, sl := range s.st.Slices {
+		if sl.TaskID == taskID && sl.Version == version {
+			return sl, nil
+		}
+	}
+	return domain.Slice{}, fmt.Errorf("версия %d задачи %s: %w", version, taskID, store.ErrNotFound)
+}
+
+// SliceVersions перечисляет версии среза задачи, свежие первыми.
+func (s *Store) SliceVersions(_ context.Context, taskID string) ([]domain.SliceRef, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []domain.SliceRef
+	for _, sl := range s.st.Slices {
+		if sl.TaskID == taskID {
+			out = append(out, sl.Ref())
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Version > out[j].Version })
+	return out, nil
+}
