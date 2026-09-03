@@ -382,9 +382,69 @@ func TestRebuildSeed(t *testing.T) {
 	}
 }
 
+// TestRebuildSkipsUnchangedMaterial: пересборка по неизменившемуся материалу
+// новой версии не даёт.
+//
+// Раньше каждое нажатие кнопки добавляло в журнал те же факты заново и заводило
+// версию, ничем не отличающуюся от предыдущей: история заполнялась пустыми
+// различиями, а журнал фактов рос от кнопки, а не от событий. С подключённой
+// моделью у этого появилась ещё и цена — оплаченный вызов, после которого в
+// реестре ничего не меняется.
+func TestRebuildSkipsUnchangedMaterial(t *testing.T) {
+	s := seeded(t)
+	ctx := context.Background()
+
+	first, err := s.Rebuild(ctx, manual.TaskID)
+	if err != nil {
+		t.Fatalf("первая сборка: %v", err)
+	}
+	factsAfterFirst, err := s.Facts(ctx, manual.TaskID)
+	if err != nil {
+		t.Fatalf("факты: %v", err)
+	}
+
+	again, err := s.Rebuild(ctx, manual.TaskID)
+	// Срез возвращается прежний и годный, но вызывающий обязан заметить, что
+	// собрано не было: молчаливое «вот вам прежняя версия» человек прочитал бы
+	// как «разбор ничего нового не нашёл», а это другое утверждение.
+	if !errors.Is(err, ErrNoChanges) {
+		t.Fatalf("ошибка %v, ожидалась ErrNoChanges", err)
+	}
+	if again.Version != first.Version {
+		t.Errorf("версия %d, ожидалась прежняя %d", again.Version, first.Version)
+	}
+
+	factsAfterSecond, err := s.Facts(ctx, manual.TaskID)
+	if err != nil {
+		t.Fatalf("факты: %v", err)
+	}
+	if len(factsAfterSecond) != len(factsAfterFirst) {
+		t.Errorf("фактов стало %d вместо %d: журнал растёт от кнопки, а не от событий",
+			len(factsAfterSecond), len(factsAfterFirst))
+	}
+
+	// Новый материал пересборку разблокирует.
+	_, err = s.AddSource(ctx, domain.Source{
+		TaskID: manual.TaskID, Kind: domain.KindNote, Title: "Заметка", Body: "новое",
+	})
+	if err != nil {
+		t.Fatalf("добавить источник: %v", err)
+	}
+	third, err := s.Rebuild(ctx, manual.TaskID)
+	if err != nil {
+		t.Fatalf("сборка после нового материала: %v", err)
+	}
+	if third.Version != first.Version+1 {
+		t.Errorf("версия %d, ожидалась %d", third.Version, first.Version+1)
+	}
+}
+
 // TestRebuildIsReproducible — главное свойство разделения труда: аналитик
-// извлекает, код считает, и второй проход по тем же источникам даёт те же
-// цифры. Версия при этом растёт, прежняя остаётся лежать.
+// извлекает, код считает, и второй проход по тем же фактам даёт те же цифры.
+// Версия при этом растёт, прежняя остаётся лежать.
+//
+// Между сборками добавляется источник: без нового материала пересборка теперь
+// пропускается, а проверить надо именно повторяемость счёта.
 func TestRebuildIsReproducible(t *testing.T) {
 	s := seeded(t)
 	ctx := context.Background()
@@ -393,6 +453,17 @@ func TestRebuildIsReproducible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("первая сборка: %v", err)
 	}
+
+	// Ручной разбор от источников не зависит — он возвращает один и тот же
+	// набор фактов. Значит все посчитанные величины обязаны совпасть, а
+	// расхождение означало бы, что счёт зависит от чего-то, кроме фактов.
+	_, err = s.AddSource(ctx, domain.Source{
+		TaskID: manual.TaskID, Kind: domain.KindNote, Title: "Заметка", Body: "повод пересобрать",
+	})
+	if err != nil {
+		t.Fatalf("добавить источник: %v", err)
+	}
+
 	second, err := s.Rebuild(ctx, manual.TaskID)
 	if err != nil {
 		t.Fatalf("вторая сборка: %v", err)

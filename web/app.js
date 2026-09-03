@@ -646,12 +646,17 @@ function ask(title, fields) {
 
 // --- действия ---
 
+// rebuild пересобирает срез.
+//
+// Итог показывается всегда, даже когда версия не появилась: «материал не
+// менялся» — это ответ, а молчание после нажатия человек читает как поломку.
 async function rebuild(btn) {
   btn.disabled = true;
   btn.textContent = "Собираю…";
   try {
-    await api("/api/tasks/" + encodeURIComponent(state.current) + "/slice/rebuild", { method: "POST" });
+    const res = await api("/api/tasks/" + encodeURIComponent(state.current) + "/slice/rebuild", { method: "POST" });
     await open(state.current);
+    flash(res.text, res.built ? "done" : "warn");
   } catch (e) {
     btn.disabled = false;
     btn.textContent = "Пересобрать срез";

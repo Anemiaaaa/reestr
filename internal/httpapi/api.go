@@ -269,8 +269,40 @@ func (s *Server) slice(w http.ResponseWriter, r *http.Request) {
 	s.writeSlice(w, r, http.StatusOK, s.svc.Slice)
 }
 
+// rebuild пересобирает срез и отвечает, что из этого вышло.
+//
+// Ответ — короткая сводка, а не сам срез: страница всё равно перечитывает доску
+// целиком, а человеку нужно понять, появилась версия или нет. Раньше кнопка
+// молча заводила новую версию при любом нажатии, и история заполнялась
+// одинаковыми записями.
 func (s *Server) rebuild(w http.ResponseWriter, r *http.Request) {
-	s.writeSlice(w, r, http.StatusOK, s.svc.Rebuild)
+	sl, err := s.svc.Rebuild(r.Context(), r.PathValue("id"))
+
+	switch {
+	case errors.Is(err, service.ErrNoChanges):
+		writeJSON(w, http.StatusOK, rebuildReport{
+			Version: sl.Version,
+			Text: fmt.Sprintf("материал не менялся — версия %d осталась прежней",
+				sl.Version),
+		})
+	case err != nil:
+		s.fail(w, r, err)
+	default:
+		writeJSON(w, http.StatusOK, rebuildReport{
+			Built:   true,
+			Version: sl.Version,
+			Text:    fmt.Sprintf("собрана версия %d", sl.Version),
+		})
+	}
+}
+
+// rebuildReport — итог пересборки для человека.
+type rebuildReport struct {
+	// Built отличает собранную версию от оставленной прежней. Без него «версия
+	// 3» на экране ничего не говорит: она могла и появиться, и остаться.
+	Built   bool   `json:"built"`
+	Version int    `json:"version"`
+	Text    string `json:"text"`
 }
 
 // writeSlice выполняет получение или пересборку среза и отдаёт представление.
