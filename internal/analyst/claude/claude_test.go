@@ -8,7 +8,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Anemiaaaa/reestr/internal/analyst"
+	"github.com/Anemiaaaa/reestr/internal/analyst/schema"
 	"github.com/Anemiaaaa/reestr/internal/domain"
 )
 
@@ -44,7 +47,7 @@ func (m *fakeModel) analyst(t *testing.T) *Analyst {
 		var content []map[string]any
 		if m.reply != nil {
 			content = append(content, map[string]any{
-				"type": "tool_use", "id": "tu_1", "name": toolName, "input": m.reply,
+				"type": "tool_use", "id": "tu_1", "name": schema.ToolName, "input": m.reply,
 			})
 		} else {
 			content = append(content, map[string]any{"type": "text", "text": m.text})
@@ -123,7 +126,7 @@ func TestRequestShape(t *testing.T) {
 		t.Fatalf("инструментов %d, хотели 1: %v", len(tools), m.got["tools"])
 	}
 	tool, _ := tools[0].(map[string]any)
-	if tool["name"] != toolName {
+	if tool["name"] != schema.ToolName {
 		t.Errorf("имя инструмента = %v", tool["name"])
 	}
 	if tool["strict"] != true {
@@ -131,19 +134,19 @@ func TestRequestShape(t *testing.T) {
 	}
 
 	// Строгий режим требует и запрета лишних полей, и списка обязательных.
-	schema, _ := tool["input_schema"].(map[string]any)
-	if schema["additionalProperties"] != false {
-		t.Errorf("лишние поля не запрещены: %v", schema["additionalProperties"])
+	inputSchema, _ := tool["input_schema"].(map[string]any)
+	if inputSchema["additionalProperties"] != false {
+		t.Errorf("лишние поля не запрещены: %v", inputSchema["additionalProperties"])
 	}
-	required, _ := schema["required"].([]any)
-	props, _ := schema["properties"].(map[string]any)
+	required, _ := inputSchema["required"].([]any)
+	props, _ := inputSchema["properties"].(map[string]any)
 	if len(required) != len(props) {
 		t.Errorf("обязательных полей %d, полей схемы %d: пропущенный раздел нельзя "+
 			"отличить от пустого", len(required), len(props))
 	}
 
 	choice, _ := m.got["tool_choice"].(map[string]any)
-	if choice["type"] != "tool" || choice["name"] != toolName {
+	if choice["type"] != "tool" || choice["name"] != schema.ToolName {
 		t.Errorf("выбор инструмента не задан жёстко: %v", m.got["tool_choice"])
 	}
 
@@ -200,7 +203,7 @@ func TestModelAnsweredWithText(t *testing.T) {
 	if err == nil {
 		t.Fatal("текстовый ответ принят за разбор")
 	}
-	if !strings.Contains(err.Error(), toolName) {
+	if !strings.Contains(err.Error(), schema.ToolName) {
 		t.Errorf("ошибка не называет инструмент: %v", err)
 	}
 }
@@ -252,3 +255,19 @@ func TestName(t *testing.T) {
 // Отмену контекста здесь не проверяем намеренно. Extract передаёт ctx в SDK
 // сквозь, своего поведения у нас на этом пути нет, а подставной сервер,
 // ждущий разрыва соединения, вешает весь прогон.
+
+// input — минимальная задача с одним источником. Здесь проверяется форма
+// запроса, а не качество разбора, поэтому источник короткий: содержательные
+// случаи разбирает analyst/schema.
+func input() analyst.Input {
+	return analyst.Input{
+		Task: domain.Task{ID: "aura", Title: "Внедрение"},
+		Sources: []domain.Source{{
+			ID:   "s-1",
+			Kind: domain.KindCorrespondence,
+			Body: "Договорились перенести срок на 20 июня. " +
+				"Доступ к тестовому контуру пока не дали.",
+		}},
+		Now: time.Date(2026, time.August, 19, 0, 0, 0, 0, time.UTC),
+	}
+}

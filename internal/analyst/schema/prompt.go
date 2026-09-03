@@ -1,6 +1,14 @@
-package claude
+package schema
 
-// systemPrompt — правила разбора.
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/Anemiaaaa/reestr/internal/analyst"
+)
+
+// SystemPrompt — правила разбора.
 //
 // Про этот текст важно понимать одно: он не защита, а объяснение. Всё, что
 // здесь названо обязательным, проверяется в convert.go и отбрасывается при
@@ -10,7 +18,7 @@ package claude
 //
 // Отсюда и тон: правила объясняются, а не выкрикиваются. Модель, которой
 // сказали «почему», ошибается реже, чем модель, которой сказали «нельзя».
-const systemPrompt = `Ты аналитик в реестре задач. Читаешь переписку, ТЗ и аудиты
+const SystemPrompt = `Ты аналитик в реестре задач. Читаешь переписку, ТЗ и аудиты
 по одной задаче и извлекаешь из них проверяемые утверждения.
 
 Твой результат читает руководитель проекта и показывает заказчику. Поэтому
@@ -60,3 +68,55 @@ sourceId — номер из списка источников, который �
 
 Пиши по-русски, коротко, без канцелярита. Формулировки в срез попадают как
 есть, их читает человек.`
+
+// UserPrompt собирает задание: карточку задачи и источники с их номерами.
+//
+// Номера источников здесь и есть то, чем модель будет ссылаться. Поэтому они
+// выводятся заметно и рядом с текстом: ссылка на источник — единственное
+// основание доверять срезу, и промахнуться в ней нельзя.
+func UserPrompt(in analyst.Input) string {
+	var b strings.Builder
+
+	b.WriteString("# Задача\n\n")
+	fmt.Fprintf(&b, "Проект: %s\n", or(in.Task.Project, "не назван"))
+	fmt.Fprintf(&b, "Название: %s\n", or(in.Task.Title, "не названо"))
+	fmt.Fprintf(&b, "Постановщик: %s\n", or(in.Task.Author, "не назван"))
+	fmt.Fprintf(&b, "Исполнитель: %s\n", or(in.Task.Assignee, "не назван"))
+	fmt.Fprintf(&b, "Поставлена: %s\n", orDate(in.Task.OpenedAt))
+	fmt.Fprintf(&b, "Срок по карточке: %s\n", orDate(in.Task.Deadline))
+	fmt.Fprintf(&b, "\nСегодня: %s\n", in.Now.Format(DateLayout))
+
+	b.WriteString("\n# Источники\n")
+	for _, s := range in.Sources {
+		fmt.Fprintf(&b, "\n## Источник %s\n", s.ID)
+		fmt.Fprintf(&b, "Вид: %s\n", s.Kind.Label())
+		if s.Author != "" {
+			fmt.Fprintf(&b, "Автор: %s\n", s.Author)
+		}
+		if !s.OccurredAt.IsZero() {
+			fmt.Fprintf(&b, "Дата: %s\n", s.OccurredAt.Format(DateLayout))
+		}
+		fmt.Fprintf(&b, "\n%s\n", s.Body)
+	}
+
+	b.WriteString("\n# Что сделать\n\nРазбери источники и верни результат вызовом инструмента " +
+		ToolName + ". Ссылайся только на номера источников из списка выше.\n")
+	return b.String()
+}
+
+func or(s, fallback string) string {
+	if strings.TrimSpace(s) == "" {
+		return fallback
+	}
+	return s
+}
+
+// orDate печатает дату в том же виде, в каком модель обязана их возвращать.
+// Незаполненная дата называется прямо: «не заполнено» и выдуманное число —
+// разные утверждения, и подставлять второе вместо первого нельзя.
+func orDate(t time.Time) string {
+	if t.IsZero() {
+		return "не заполнено"
+	}
+	return t.Format(DateLayout)
+}

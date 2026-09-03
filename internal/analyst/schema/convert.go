@@ -1,7 +1,8 @@
-package claude
+package schema
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode"
@@ -10,8 +11,8 @@ import (
 	"github.com/Anemiaaaa/reestr/internal/domain"
 )
 
-// dateLayout — вид даты, в котором модель обязана называть даты.
-const dateLayout = "2006-01-02"
+// DateLayout — вид даты, в котором модель обязана называть даты.
+const DateLayout = "2006-01-02"
 
 // Rejection — отклонённое утверждение модели.
 //
@@ -53,7 +54,7 @@ func newChecker(sources []domain.Source) *checker {
 	return c
 }
 
-func (c *checker) reject(field, reason string, v value) {
+func (c *checker) reject(field, reason string, v Value) {
 	c.rejected = append(c.rejected, Rejection{
 		Field: field, Reason: reason, SourceID: v.SourceID, Quote: v.Quote,
 	})
@@ -65,7 +66,7 @@ func (c *checker) reject(field, reason string, v value) {
 // возвращается как domain.Missing с объяснением, а не пустым: поле «этап»,
 // молча ставшее пустым, читается как «модель не нашла», хотя на деле она
 // нашла и была уличена.
-func (c *checker) check(field string, v value) (domain.Value, bool) {
+func (c *checker) check(field string, v Value) (domain.Value, bool) {
 	text := strings.TrimSpace(v.Text)
 
 	// Поле, которого в ответе нет вовсе, — это не выдумка, а пропуск, и сказать
@@ -152,7 +153,7 @@ func (c *checker) date(field, s string) (time.Time, bool) {
 	if s == "" {
 		return time.Time{}, true
 	}
-	t, err := time.Parse(dateLayout, s)
+	t, err := time.Parse(DateLayout, s)
 	if err != nil {
 		c.rejected = append(c.rejected, Rejection{
 			Field: field, Reason: "дата не в виде ГГГГ-ММ-ДД: " + quoteText(s),
@@ -203,7 +204,7 @@ func quoteText(s string) string { return "«" + s + "»" }
 //
 // Список отклонений возвращается вместе с результатом: вызывающий обязан его
 // увидеть, а не гадать, почему срез вышел бедным.
-func convert(a answer, in analyst.Input) (analyst.Output, []Rejection) {
+func Convert(a Answer, in analyst.Input) (analyst.Output, []Rejection) {
 	c := newChecker(in.Sources)
 	out := analyst.Output{}
 
@@ -230,7 +231,7 @@ func convert(a answer, in analyst.Input) (analyst.Output, []Rejection) {
 // values проверяет список значений. Не устоявшее выбрасывается, а не
 // превращается в пробел: пробел в списке «что сделано» — это строка «данных
 // нет» посреди перечисления, которую читателю нечем объяснить.
-func (c *checker) values(field string, list []value) []domain.Value {
+func (c *checker) values(field string, list []Value) []domain.Value {
 	var out []domain.Value
 	for i, v := range list {
 		if got, ok := c.check(fmt.Sprintf("%s[%d]", field, i), v); ok {
@@ -401,9 +402,9 @@ func (c *checker) questions(list []question) []domain.Question {
 		}
 		// Ответ проверяется, но вопрос без ответа не выбрасывается: вопрос без
 		// ответа — это и есть пробел, ради которого раздел существует.
-		answer, _ := c.check(fmt.Sprintf("questions[%d].answer", i), it.Answer)
+		Answer, _ := c.check(fmt.Sprintf("questions[%d].Answer", i), it.Answer)
 		out = append(out, domain.Question{
-			N: n, Text: text, Unlocks: strings.TrimSpace(it.Unlocks), Answer: answer,
+			N: n, Text: text, Unlocks: strings.TrimSpace(it.Unlocks), Answer: Answer,
 		})
 	}
 	return out
@@ -478,4 +479,25 @@ func trimAll(list []string) []string {
 		}
 	}
 	return out
+}
+
+// Report пишет в лог, что из ответа не приняли.
+//
+// Отклонения не молчат по той же причине, по которой они вообще собираются: по
+// ним видно, врёт модель редко или постоянно и на каких полях. Молчаливая
+// фильтрация выглядела бы как безупречный разбор, который просто мало что нашёл.
+//
+// Здесь, а не в транспорте: транспорты разные, а вопрос «чему не поверили» —
+// один и тот же, и отвечать на него по-разному в двух местах незачем.
+func Report(log *slog.Logger, taskID string, rejected []Rejection) {
+	if log == nil || len(rejected) == 0 {
+		return
+	}
+	reasons := make([]string, 0, len(rejected))
+	for _, r := range rejected {
+		reasons = append(reasons, r.String())
+	}
+	log.Warn("часть ответа модели не принята",
+		"задача", taskID, "отклонено", len(rejected),
+		"причины", strings.Join(reasons, "; "))
 }

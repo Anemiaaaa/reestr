@@ -20,6 +20,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Anemiaaaa/reestr/internal/analyst"
+	"github.com/Anemiaaaa/reestr/internal/analyst/gateway"
 	"github.com/Anemiaaaa/reestr/internal/analyst/manual"
 	"github.com/Anemiaaaa/reestr/internal/bitrix"
 	"github.com/Anemiaaaa/reestr/internal/config"
@@ -80,7 +82,7 @@ func run() error {
 	}
 	defer closeStore()
 
-	svc := service.New(st, manual.New(), log)
+	svc := service.New(st, chooseAnalyst(log), log)
 	// Вебхук не обязателен: без него реестр работает целиком, теряя только
 	// список чатов при создании задачи. Адрес в лог не пишется — в нём токен.
 	if hook := config.Env("BITRIX_WEBHOOK", ""); hook != "" {
@@ -136,6 +138,40 @@ func run() error {
 		return fmt.Errorf("остановка сервера: %w", err)
 	}
 	return <-errc
+}
+
+// chooseAnalyst выбирает, кто разбирает источники: модель, если настроена,
+// иначе ручной разбор.
+//
+// Отказ от модели здесь не ошибка запуска. Реестр без модели работает целиком —
+// он просто показывает разбор, собранный руками, и говорит об этом в срезе
+// именем аналитика. Падать из-за ненастроенной необязательной интеграции значит
+// требовать ключ от того, кто пришёл посмотреть список задач.
+//
+// Ошибку настройки при этом видно: она пишется в лог предупреждением. Молча
+// откатиться на ручной разбор было бы хуже отказа — человек ждал бы от среза
+// свежего разбора и не понял, почему видит старый.
+func chooseAnalyst(log *slog.Logger) analyst.Analyst {
+	key := config.Env("ANTHROPIC_API_KEY", "")
+	model := config.Env("ANTHROPIC_MODEL", "")
+	if key == "" || model == "" {
+		log.Info("модель не настроена, разбор ручной")
+		return manual.New()
+	}
+
+	a, err := gateway.New(gateway.Options{
+		BaseURL: config.Env("ANTHROPIC_BASE_URL", ""),
+		APIKey:  key,
+		Model:   model,
+		Log:     log,
+	})
+	if err != nil {
+		// Адрес шлюза и модель в лог попадают, ключ — нет.
+		log.Warn("модель настроена неверно, разбор ручной", "ошибка", err)
+		return manual.New()
+	}
+	log.Info("разбор моделью", "модель", model)
+	return a
 }
 
 // openStore открывает хранилище: базу, если задана строка подключения, иначе

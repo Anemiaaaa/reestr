@@ -1,4 +1,4 @@
-package claude
+package schema
 
 import (
 	"strings"
@@ -25,8 +25,8 @@ func input() analyst.Input {
 	}
 }
 
-func quoted(text, quote string) value {
-	return value{Text: text, Origin: "quoted", SourceID: "s-1", Quote: quote}
+func quoted(text, quote string) Value {
+	return Value{Text: text, Origin: "quoted", SourceID: "s-1", Quote: quote}
 }
 
 // find ищет отклонение по полю. Отклонения — часть результата, а не отладочный
@@ -46,12 +46,12 @@ func find(t *testing.T, list []Rejection, field string) Rejection {
 func TestQuoteMustBeInSource(t *testing.T) {
 	t.Parallel()
 
-	a := answer{
+	a := Answer{
 		Stage:        quoted("в работе", "Доступ к тестовому контуру пока не дали"),
 		GoalAsStated: quoted("интеграция с 1С", "принимать не будем без интеграции"),
 	}
 
-	out, rejected := convert(a, input())
+	out, rejected := Convert(a, input())
 
 	// Цитата, которая действительно есть в источнике, проходит и сохраняет
 	// ссылку: без неё значение нечем проверить.
@@ -102,7 +102,7 @@ func TestQuoteNormalization(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			out, _ := convert(answer{Stage: quoted("в работе", tc.quote)}, input())
+			out, _ := Convert(Answer{Stage: quoted("в работе", tc.quote)}, input())
 			got := out.Stage.Origin == domain.OriginQuoted
 			if got != tc.want {
 				t.Errorf("цитата %q принята=%v, хотели %v", tc.quote, got, tc.want)
@@ -117,9 +117,9 @@ func TestQuoteNormalization(t *testing.T) {
 func TestComputedRejected(t *testing.T) {
 	t.Parallel()
 
-	a := answer{Stage: value{Text: "готово на 60%", Origin: "computed", Note: "3 из 5 этапов"}}
+	a := Answer{Stage: Value{Text: "готово на 60%", Origin: "computed", Note: "3 из 5 этапов"}}
 
-	out, rejected := convert(a, input())
+	out, rejected := Convert(a, input())
 	if out.Stage.Origin != domain.OriginMissing {
 		t.Errorf("расчёт от модели принят: %+v", out.Stage)
 	}
@@ -133,37 +133,37 @@ func TestValueRules(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		v      value
+		v      Value
 		want   domain.Origin
 		reason string
 	}{
 		{
 			name:   "цитата без источника",
-			v:      value{Text: "в работе", Origin: "quoted", Quote: "правки 8 июня"},
+			v:      Value{Text: "в работе", Origin: "quoted", Quote: "правки 8 июня"},
 			want:   domain.OriginMissing,
 			reason: "без источника",
 		},
 		{
 			name:   "ссылка на чужой источник",
-			v:      value{Text: "в работе", Origin: "quoted", SourceID: "s-99", Quote: "правки 8 июня"},
+			v:      Value{Text: "в работе", Origin: "quoted", SourceID: "s-99", Quote: "правки 8 июня"},
 			want:   domain.OriginMissing,
 			reason: "неизвестный источник",
 		},
 		{
 			name:   "происхождение «цитата», а цитаты нет",
-			v:      value{Text: "в работе", Origin: "quoted", SourceID: "s-1"},
+			v:      Value{Text: "в работе", Origin: "quoted", SourceID: "s-1"},
 			want:   domain.OriginMissing,
 			reason: "цитаты нет",
 		},
 		{
 			name:   "вывод без объяснения",
-			v:      value{Text: "в работе", Origin: "derived", SourceID: "s-1"},
+			v:      Value{Text: "в работе", Origin: "derived", SourceID: "s-1"},
 			want:   domain.OriginMissing,
 			reason: "без объяснения",
 		},
 		{
 			name: "вывод с объяснением проходит",
-			v: value{
+			v: Value{
 				Text: "в работе", Origin: "derived", SourceID: "s-1",
 				Note: "о доступе спрашивают, значит работа идёт",
 			},
@@ -171,24 +171,24 @@ func TestValueRules(t *testing.T) {
 		},
 		{
 			name:   "пробел без вопроса",
-			v:      value{Origin: "missing"},
+			v:      Value{Origin: "missing"},
 			want:   domain.OriginMissing,
 			reason: "без вопроса",
 		},
 		{
 			name: "пробел с вопросом проходит",
-			v:    value{Origin: "missing", Note: "спросить у постановщика дату"},
+			v:    Value{Origin: "missing", Note: "спросить у постановщика дату"},
 			want: domain.OriginMissing,
 		},
 		{
 			name:   "неизвестное происхождение",
-			v:      value{Text: "в работе", Origin: "guessed"},
+			v:      Value{Text: "в работе", Origin: "guessed"},
 			want:   domain.OriginMissing,
 			reason: "неизвестное происхождение",
 		},
 		{
 			name:   "цитата с пустым значением",
-			v:      value{Origin: "quoted", SourceID: "s-1", Quote: "правки 8 июня"},
+			v:      Value{Origin: "quoted", SourceID: "s-1", Quote: "правки 8 июня"},
 			want:   domain.OriginMissing,
 			reason: "пустое",
 		},
@@ -197,7 +197,7 @@ func TestValueRules(t *testing.T) {
 			// схемы или промпта, второе — попытка выдать желаемое за источник.
 			// Сообщение обязано их различать.
 			name:   "поля нет в ответе вовсе",
-			v:      value{},
+			v:      Value{},
 			want:   domain.OriginMissing,
 			reason: "не заполнено",
 		},
@@ -207,7 +207,7 @@ func TestValueRules(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			out, rejected := convert(answer{Stage: tc.v}, input())
+			out, rejected := Convert(Answer{Stage: tc.v}, input())
 			if out.Stage.Origin != tc.want {
 				t.Errorf("происхождение = %q, хотели %q", out.Stage.Origin, tc.want)
 			}
@@ -239,14 +239,14 @@ func TestValueRules(t *testing.T) {
 func TestListsDropUnproven(t *testing.T) {
 	t.Parallel()
 
-	a := answer{
-		Done: []value{
+	a := Answer{
+		Done: []Value{
 			quoted("правки приняты", "Заказчик прислал правки 8 июня"),
 			quoted("всё согласовано", "заказчик всем доволен"),
 		},
 	}
 
-	out, rejected := convert(a, input())
+	out, rejected := Convert(a, input())
 	if len(out.Done) != 1 {
 		t.Fatalf("в «сделано» %d значений, хотели 1: %+v", len(out.Done), out.Done)
 	}
@@ -259,7 +259,7 @@ func TestListsDropUnproven(t *testing.T) {
 func TestBlockers(t *testing.T) {
 	t.Parallel()
 
-	a := answer{Blockers: []blocker{
+	a := Answer{Blockers: []blocker{
 		{
 			Summary: "нет доступа к тестовому контуру",
 			Kind:    "no_access",
@@ -279,7 +279,7 @@ func TestBlockers(t *testing.T) {
 		},
 	}}
 
-	out, rejected := convert(a, input())
+	out, rejected := Convert(a, input())
 	if len(out.Blockers) != 1 {
 		t.Fatalf("блокеров %d, хотели 1: %+v", len(out.Blockers), out.Blockers)
 	}
@@ -306,13 +306,13 @@ func TestBlockers(t *testing.T) {
 func TestShifts(t *testing.T) {
 	t.Parallel()
 
-	a := answer{Shifts: []shift{
+	a := Answer{Shifts: []shift{
 		{At: "2026-06-08", From: "2026-06-08", To: "2026-06-20", Comment: "правки заказчика"},
 		{At: "2026-06-08"},
 		{At: "8 июня 2026", From: "2026-06-08", To: "2026-06-20"},
 	}}
 
-	out, rejected := convert(a, input())
+	out, rejected := Convert(a, input())
 	if len(out.Shifts) != 1 {
 		t.Fatalf("переносов %d, хотели 1: %+v", len(out.Shifts), out.Shifts)
 	}
@@ -330,14 +330,14 @@ func TestShifts(t *testing.T) {
 func TestMilestones(t *testing.T) {
 	t.Parallel()
 
-	a := answer{Milestones: []milestone{
+	a := Answer{Milestones: []milestone{
 		{Title: "Сбор требований", Due: "2026-06-08", Progress: 1},
 		{Title: "Интеграция", Progress: 1.4},
 		{Title: "Приёмка", Due: "июнь"},
 		{Title: "   "},
 	}}
 
-	out, rejected := convert(a, input())
+	out, rejected := Convert(a, input())
 	if len(out.Milestones) != 2 {
 		t.Fatalf("этапов %d, хотели 2: %+v", len(out.Milestones), out.Milestones)
 	}
@@ -358,12 +358,12 @@ func TestMilestones(t *testing.T) {
 func TestPMActions(t *testing.T) {
 	t.Parallel()
 
-	a := answer{PMActions: []pmAction{
+	a := Answer{PMActions: []pmAction{
 		{Kind: "access", Text: "достать доступ к тестовому контуру", Why: "снимет блокер"},
 		{Kind: "разобраться", Text: "разобраться с задачей"},
 	}}
 
-	out, rejected := convert(a, input())
+	out, rejected := Convert(a, input())
 	if len(out.PMActions) != 1 {
 		t.Fatalf("действий %d, хотели 1: %+v", len(out.PMActions), out.PMActions)
 	}
@@ -380,12 +380,12 @@ func TestPMActions(t *testing.T) {
 func TestQuestionsKeepUnanswered(t *testing.T) {
 	t.Parallel()
 
-	a := answer{Questions: []question{
-		{N: 1, Text: "Когда дадут доступ?", Answer: value{Origin: "missing", Note: "спросить у заказчика"}},
+	a := Answer{Questions: []question{
+		{N: 1, Text: "Когда дадут доступ?", Answer: Value{Origin: "missing", Note: "спросить у заказчика"}},
 		{N: 2, Text: "Кто принимает работу?", Answer: quoted("заказчик", "выдумка")},
 	}}
 
-	out, rejected := convert(a, input())
+	out, rejected := Convert(a, input())
 	if len(out.Questions) != 2 {
 		t.Fatalf("вопросов %d, хотели 2", len(out.Questions))
 	}
@@ -397,7 +397,7 @@ func TestQuestionsKeepUnanswered(t *testing.T) {
 	if out.Questions[1].Answered() {
 		t.Errorf("выдуманный ответ принят: %+v", out.Questions[1].Answer)
 	}
-	find(t, rejected, "questions[1].answer")
+	find(t, rejected, "questions[1].Answer")
 }
 
 // TestCleanAnswerHasNoRejections: годный ответ не должен давать отклонений.
@@ -405,15 +405,15 @@ func TestQuestionsKeepUnanswered(t *testing.T) {
 func TestCleanAnswerHasNoRejections(t *testing.T) {
 	t.Parallel()
 
-	a := answer{
+	a := Answer{
 		Stage:        quoted("в работе", "Доступ к тестовому контуру пока не дали"),
 		GoalAsStated: quoted("интеграция с 1С", "без интеграции с 1С принимать не будем"),
-		GoalClarified: value{
+		GoalClarified: Value{
 			Text: "принять можно только с интеграцией", Origin: "derived", SourceID: "s-1",
 			Note: "из условия приёмки",
 		},
-		Done: []value{quoted("правки собраны", "Заказчик прислал правки 8 июня")},
-		Left: []value{{Origin: "missing", Note: "спросить, что осталось после правок"}},
+		Done: []Value{quoted("правки собраны", "Заказчик прислал правки 8 июня")},
+		Left: []Value{{Origin: "missing", Note: "спросить, что осталось после правок"}},
 		Criteria: []criterion{
 			{N: 1, Text: "интеграция с 1С работает", Met: false, Note: "доступа нет"},
 		},
@@ -423,7 +423,7 @@ func TestCleanAnswerHasNoRejections(t *testing.T) {
 		},
 	}
 
-	out, rejected := convert(a, input())
+	out, rejected := Convert(a, input())
 	if len(rejected) != 0 {
 		t.Fatalf("годный ответ отклонён: %v", rejected)
 	}

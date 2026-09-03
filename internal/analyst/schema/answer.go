@@ -5,19 +5,19 @@
 // что принято. Правило, записанное только в промпте, — это пожелание, и первое
 // же выдуманное значение попадёт в срез, который PM покажет заказчику.
 //
-// Отсюда деление пакета. answer.go описывает форму ответа, convert.go проверяет
+// Отсюда деление пакета. Answer.go описывает форму ответа, convert.go проверяет
 // его и переводит в analyst.Output, отбрасывая всё, что не сошлось.
-package claude
+package schema
 
 import "strings"
 
-// value — значение с происхождением в том виде, в каком его возвращает модель.
+// Value — значение с происхождением в том виде, в каком его возвращает модель.
 //
 // Повторяет domain.Value, но отдельным типом. Разница не в полях, а в доверии:
 // domain.Value — уже проверенное значение, а это — заявление модели, которое
 // ещё предстоит проверить. Один тип на оба состояния означал бы, что непроверенное
 // значение можно случайно положить в срез, и компилятор не возразит.
-type value struct {
+type Value struct {
 	Text string `json:"text"`
 
 	// Origin — «quoted», «derived» или «missing».
@@ -46,7 +46,7 @@ type value struct {
 // Отличать пропуск от негодного значения нужно ради читателя лога: пропущенное
 // поле — это недоработка промпта или схемы, а негодное значение — попытка
 // модели выдать желаемое за источник. Лечатся они по-разному.
-func (v value) Empty() bool {
+func (v Value) Empty() bool {
 	return strings.TrimSpace(v.Text) == "" &&
 		strings.TrimSpace(v.Origin) == "" &&
 		strings.TrimSpace(v.SourceID) == "" &&
@@ -54,18 +54,18 @@ func (v value) Empty() bool {
 		strings.TrimSpace(v.Note) == ""
 }
 
-// answer — весь ответ модели.
+// Answer — весь ответ модели.
 //
 // Даты здесь строками «ГГГГ-ММ-ДД», а не числами дней: аналитик называет даты,
 // а сколько до них осталось, считает сервис на дату сборки. Иначе срез, собранный
 // вчера, соврал бы сегодня.
-type answer struct {
-	Stage         value   `json:"stage"`
-	GoalAsStated  value   `json:"goalAsStated"`
-	GoalClarified value   `json:"goalClarified"`
-	OutOfScope    []value `json:"outOfScope,omitempty"`
-	Done          []value `json:"done,omitempty"`
-	Left          []value `json:"left,omitempty"`
+type Answer struct {
+	Stage         Value   `json:"stage"`
+	GoalAsStated  Value   `json:"goalAsStated"`
+	GoalClarified Value   `json:"goalClarified"`
+	OutOfScope    []Value `json:"outOfScope,omitempty"`
+	Done          []Value `json:"done,omitempty"`
+	Left          []Value `json:"left,omitempty"`
 
 	Criteria   []criterion `json:"criteria,omitempty"`
 	Milestones []milestone `json:"milestones,omitempty"`
@@ -113,21 +113,21 @@ type blocker struct {
 	Kind      string `json:"kind"`
 	DependsOn string `json:"dependsOn,omitempty"`
 	Since     string `json:"since,omitempty"`
-	Evidence  value  `json:"evidence"`
+	Evidence  Value  `json:"evidence"`
 }
 
 type risk struct {
 	Summary    string `json:"summary"`
 	DaysImpact int    `json:"daysImpact,omitempty"`
 	Spread     string `json:"spread,omitempty"`
-	Evidence   value  `json:"evidence"`
+	Evidence   Value  `json:"evidence"`
 }
 
 type question struct {
 	N       int    `json:"n"`
 	Text    string `json:"text"`
 	Unlocks string `json:"unlocks,omitempty"`
-	Answer  value  `json:"answer"`
+	Answer  Value  `json:"Answer"`
 }
 
 type artifact struct {

@@ -1,4 +1,4 @@
-package claude
+package schema
 
 import "sort"
 
@@ -72,7 +72,7 @@ func dateSchema(what string) map[string]any {
 	}
 }
 
-func schemaProperties() map[string]any {
+func Properties() map[string]any {
 	return map[string]any{
 		"stage":        valueSchema("Этап задачи: не начато, в работе, на проверке, заблокировано, готово."),
 		"goalAsStated": valueSchema("Цель словами постановщика, как она сформулирована в задаче."),
@@ -162,9 +162,9 @@ func schemaProperties() map[string]any {
 				"n":       map[string]any{"type": "integer", "description": "Номер по порядку."},
 				"text":    map[string]any{"type": "string", "description": "Вопрос специалисту."},
 				"unlocks": map[string]any{"type": "string", "description": "Что даст ответ."},
-				"answer":  valueSchema("Ответ, если он есть в источниках. Иначе origin=missing."),
+				"Answer":  valueSchema("Ответ, если он есть в источниках. Иначе origin=missing."),
 			},
-			"required":             []string{"n", "text", "answer"},
+			"required":             []string{"n", "text", "Answer"},
 			"additionalProperties": false,
 		}, "Вопросы, ответы на которые нужны для полноты среза."),
 
@@ -197,5 +197,34 @@ func schemaProperties() map[string]any {
 			"required":             []string{"kind", "text"},
 			"additionalProperties": false,
 		}, "Что нужно от руководителя проекта, чтобы работа пошла дальше."),
+	}
+}
+
+// ToolName — имя инструмента, которым модель обязана ответить.
+//
+// Ответ идёт инструментом, а не текстом. Текстовый ответ пришлось бы вырезать
+// из markdown-обёртки и разбирать на удачу, а разбор на удачу ошибается ровно
+// тогда, когда модель написала что-то непривычное, — то есть в самом
+// интересном случае.
+const ToolName = "srez"
+
+// ToolDescription — что делает инструмент, словами для модели.
+const ToolDescription = "Вернуть разбор источников задачи."
+
+// Required перечисляет обязательные поля ответа.
+//
+// Обязательны все разделы, включая списки. Пустой список — это утверждение
+// «ничего не нашлось», а пропущенный раздел — молчание, и различать их важнее,
+// чем экономить на длине ответа.
+func Required() []string { return sortedKeys(Properties()) }
+
+// JSONSchema — схема ответа целиком, как её ждут и Anthropic, и
+// OpenAI-совместимые шлюзы: у обоих это обычный JSON Schema объекта.
+func JSONSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"properties":           Properties(),
+		"required":             Required(),
+		"additionalProperties": false,
 	}
 }
