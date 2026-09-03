@@ -689,15 +689,14 @@ function ask(title, fields) {
 // Итог показывается всегда, даже когда версия не появилась: «материал не
 // менялся» — это ответ, а молчание после нажатия человек читает как поломку.
 async function rebuild(btn) {
-  btn.disabled = true;
-  btn.textContent = "Собираю…";
+  const done = busy(btn, "Собираю срез…");
   try {
     const res = await api("/api/tasks/" + encodeURIComponent(state.current) + "/slice/rebuild", { method: "POST" });
+    done();
     await open(state.current);
     flash(res.text, res.built ? "done" : "warn");
   } catch (e) {
-    btn.disabled = false;
-    btn.textContent = "Пересобрать срез";
+    done();
     flash(e.message);
   }
 }
@@ -709,19 +708,18 @@ async function rebuild(btn) {
 // сослался разбор, и пересборка сразу после подтяжки чаще всего дала бы ту же
 // самую версию — то есть лишнюю запись в истории.
 async function pull(btn) {
-  btn.disabled = true;
-  btn.textContent = "Читаю чат…";
+  const done = busy(btn, "Читаю чат…");
   try {
     const res = await api("/api/tasks/" + encodeURIComponent(state.current) + "/pull", { method: "POST" });
     // Перерисовываем в любом случае: даже без новых сообщений изменилось время
     // последнего похода, и человек должен видеть, что кнопка сработала.
     // Сначала страница, потом сообщение: open заменяет содержимое целиком и
     // стёр бы сообщение, вставленное до него.
+    done();
     await open(state.current);
     flash(res.text, res.added ? "done" : "warn");
   } catch (e) {
-    btn.disabled = false;
-    btn.textContent = "Подтянуть переписку";
+    done();
     flash(e.message);
   }
 }
@@ -751,6 +749,9 @@ async function addSource() {
   ]);
   if (!got) return;
 
+  // Кнопки здесь нет — форма уже закрыта, — но полоса вверху нужна: следом
+  // идёт пересборка, а она занимает около минуты.
+  const done = busy(null, "");
   try {
     await api("/api/tasks/" + encodeURIComponent(state.current) + "/sources", {
       method: "POST",
@@ -760,9 +761,11 @@ async function addSource() {
     // изменился, а не в том, чтобы файл лёг в список.
     const res = await api("/api/tasks/" + encodeURIComponent(state.current) + "/slice/rebuild",
       { method: "POST" });
+    done();
     await open(state.current);
     flash(res.text, res.built ? "done" : "warn");
   } catch (e) {
+    done();
     flash(e.message);
   }
 }
@@ -1064,4 +1067,43 @@ async function drawUser() {
       location.href = "/login";
     }
   });
+}
+
+// --- занятость ---
+
+// busy отмечает долгую работу: полоса вверху и счётчик секунд на кнопке.
+//
+// Сборка среза моделью занимает около минуты. Замершая кнопка на минуту
+// выглядит как зависший интерфейс, и человек жмёт её второй раз — а второй раз
+// это второй оплаченный вызов модели. Поэтому видно и что работа идёт, и
+// сколько она уже длится.
+//
+// Возвращает функцию, которая всё возвращает на место. Вызывать её обязательно,
+// в том числе на ошибке: полоса, оставшаяся ползти навсегда, хуже её отсутствия.
+function busy(btn, label) {
+  const bar = $("#progress");
+  const started = Date.now();
+  const was = btn ? btn.textContent : "";
+
+  if (bar) bar.hidden = false;
+  if (btn) btn.disabled = true;
+
+  const tick = () => {
+    if (!btn) return;
+    const sec = Math.round((Date.now() - started) / 1000);
+    // Первые секунды без счётчика: на быстрой операции мелькающие цифры только
+    // дёргают глаз.
+    btn.textContent = sec < 2 ? label : label + " " + sec + " с";
+  };
+  tick();
+  const timer = setInterval(tick, 1000);
+
+  return () => {
+    clearInterval(timer);
+    if (bar) bar.hidden = true;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = was;
+    }
+  };
 }

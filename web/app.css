@@ -668,3 +668,63 @@ h1 {
   color: var(--faint);
   margin-top: 10px;
 }
+
+/* --- полоса занятости --- */
+
+/* Сборка среза моделью занимает около минуты. Замершая кнопка на минуту
+   выглядит как зависший интерфейс, и человек жмёт её второй раз. Полоса вверху
+   говорит, что работа идёт, а секунды на кнопке — сколько уже. */
+
+.progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 100;
+  background: transparent;
+  overflow: hidden;
+  pointer-events: none;
+}
+.progress[hidden] { display: none; }
+
+.progress__bar {
+  position: absolute;
+  height: 100%;
+  width: 30%;
+  background: var(--blue);
+  border-radius: 0 2px 2px 0;
+  animation: crawl 1.4s ease-in-out infinite;
+}
+
+/* Полоса не притворяется, будто знает долю выполнения: она её не знает.
+   Движение говорит «работа идёт», и не более того. */
+@keyframes crawl {
+  0%   { left: -30%; width: 30%; }
+  50%  { left: 35%;  width: 45%; }
+  100% { left: 100%; width: 30%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress__bar { animation: none; left: 0; width: 100%; opacity: .5; }
+}
+
+/* --- мелочи --- */
+
+/* Кнопки и вкладки чуть отзывчивее: нажатие видно, а не угадывается. */
+.btn, .tab, .item { transition: background-color .12s ease, color .12s ease; }
+.btn:active:not([disabled]) { transform: translateY(1px); }
+
+/* Сообщение о том, что вышло, появляется плавно: мгновенно возникшая строка
+   читается как ошибка вёрстки. */
+.done, .err { animation: appear .18s ease-out; }
+
+@keyframes appear {
+  from { opacity: 0; transform: translateY(-3px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn, .tab, .item { transition: none; }
+  .done, .err { animation: none; }
+}

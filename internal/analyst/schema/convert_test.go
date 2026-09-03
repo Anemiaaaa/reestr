@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -440,5 +441,61 @@ func TestCleanAnswerHasNoRejections(t *testing.T) {
 		t.Errorf("артефакты: %+v", out.Artifacts)
 	case len(out.Shifts) != 1:
 		t.Errorf("переносы: %+v", out.Shifts)
+	}
+}
+
+// TestValueFromBareString: модель иногда отвечает в поле голой строкой вместо
+// значения с происхождением. Проверено на живом шлюзе: строгий режим схемы это
+// не остановил, и разбор всего ответа падал на одном поле — восемьдесят секунд
+// работы и оплаченный вызов пропадали целиком.
+//
+// Теперь строка становится значением без происхождения: проверка его отбросит и
+// скажет почему, а остальные разделы уцелеют.
+func TestValueFromBareString(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{
+		"goalAsStated": "интеграция с 1С",
+		"stage": {"text": "в работе", "origin": "quoted", "sourceId": "s-1",
+		          "quote": "Доступ к тестовому контуру пока не дали"},
+		"done": [{"text": "правки собраны", "origin": "quoted", "sourceId": "s-1",
+		          "quote": "Заказчик прислал правки 8 июня"}]
+	}`)
+
+	var a Answer
+	if err := json.Unmarshal(raw, &a); err != nil {
+		t.Fatalf("ответ со строкой вместо значения не разобрался: %v", err)
+	}
+
+	out, rejected := Convert(a, input())
+
+	// Годные разделы уцелели — это и есть смысл правки.
+	if out.Stage.Origin != domain.OriginQuoted {
+		t.Errorf("этап потерялся из-за чужого поля: %+v", out.Stage)
+	}
+	if len(out.Done) != 1 {
+		t.Errorf("«сделано» потерялось: %+v", out.Done)
+	}
+
+	// А негодное поле отброшено с внятной причиной.
+	if out.GoalAsStated.Origin != domain.OriginMissing {
+		t.Errorf("строка принята за значение: %+v", out.GoalAsStated)
+	}
+	if r := find(t, rejected, "goal.asStated"); !strings.Contains(r.Reason, "без происхождения") {
+		t.Errorf("причина отклонения: %q", r.Reason)
+	}
+}
+
+// TestValueFromGarbage: ни объект, ни строка — поле считаем незаполненным.
+// Ронять из-за него разбор незачем.
+func TestValueFromGarbage(t *testing.T) {
+	t.Parallel()
+
+	var a Answer
+	if err := json.Unmarshal([]byte(`{"stage": 42, "goalAsStated": [1,2]}`), &a); err != nil {
+		t.Fatalf("ответ с мусором в полях не разобрался: %v", err)
+	}
+	if !a.Stage.Empty() || !a.GoalAsStated.Empty() {
+		t.Errorf("мусор принят за значение: %+v / %+v", a.Stage, a.GoalAsStated)
 	}
 }
