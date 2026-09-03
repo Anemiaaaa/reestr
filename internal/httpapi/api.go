@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Anemiaaaa/reestr/internal/auth"
 	"github.com/Anemiaaaa/reestr/internal/bitrix"
 	"github.com/Anemiaaaa/reestr/internal/domain"
 	"github.com/Anemiaaaa/reestr/internal/ru"
@@ -24,18 +25,28 @@ type Server struct {
 	svc     *service.Service
 	log     *slog.Logger
 	handler http.Handler
+
+	// auth и web нужны странице входа: она отдаётся из тех же файлов интерфейса
+	// и решает, пускать ли дальше. Пустой auth означает «вход выключен» —
+	// законный режим для локального запуска на петле.
+	auth *auth.Auth
+	web  fs.FS
 }
 
 // New собирает сервер. web — файлы интерфейса; откуда они взялись, из embed или
 // с диска, транспорту знать не нужно.
-func New(svc *service.Service, web fs.FS, log *slog.Logger) *Server {
+func New(svc *service.Service, web fs.FS, log *slog.Logger, a *auth.Auth) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	s := &Server{svc: svc, log: log}
+	s := &Server{svc: svc, log: log, auth: a, web: web}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("GET /api/me", s.who)
+	mux.HandleFunc("POST /api/login", s.login)
+	mux.HandleFunc("POST /api/logout", s.logout)
+	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("GET /api/bitrix/tasks", s.portalTasks)
 	mux.HandleFunc("GET /api/bitrix/chats", s.chats)
 	mux.HandleFunc("GET /api/tasks", s.tasks)
@@ -59,7 +70,13 @@ func New(svc *service.Service, web fs.FS, log *slog.Logger) *Server {
 		mux.Handle("GET /", http.FileServerFS(web))
 	}
 
-	s.handler = withRecover(log, withLogging(log, mux))
+	handler := http.Handler(mux)
+	// Вход оборачивает всё разом: новая ручка попадает под защиту сама, а не
+	// после того, как о ней вспомнят.
+	if a != nil {
+		handler = withAuth(a, handler)
+	}
+	s.handler = withRecover(log, withLogging(log, handler))
 	return s
 }
 
@@ -673,4 +690,70 @@ func (s *Server) addIncident(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, newIncidents([]domain.Incident{in}, nil)[0])
+}
+
+// --- вход ---
+
+type loginRequest struct {
+	Login    string `json:"login"`
+	Password string `json:"password"`
+}
+
+// login проверяет пару и выдаёт пропуск.
+//
+// Ответ на неверную пару один и тот же независимо от того, что именно не
+// сошлось. Сообщение «такого логина нет» бесплатно отдаёт подбирающему список
+// заведённых входов, после чего перебирать остаётся только пароль.
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	if s.auth == nil {
+		s.fail(w, r, fmt.Errorf("вход не настроен: %w", service.ErrInvalid))
+		return
+	}
+
+	var req loginRequest
+	if err := readJSON(r, &req); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if !s.auth.Check(req.Login, req.Password) {
+		s.log.Warn("неудачная попытка входа", "логин", req.Login)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{
+			"error": "неверный логин или пароль",
+		})
+		return
+	}
+
+	setSession(w, r, s.auth.Issue(strings.TrimSpace(req.Login)))
+	s.log.Info("вход", "логин", req.Login)
+	writeJSON(w, http.StatusOK, map[string]string{"login": strings.TrimSpace(req.Login)})
+}
+
+// logout стирает пропуск. Работает и без действующей сессии: кнопка «выйти»
+// должна выходить, а не спорить.
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	clearSession(w, r)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// loginPage отдаёт страницу входа.
+func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
+	// Вошедшего на страницу входа не пускаем: он пришёл сюда по старой закладке
+	// и ждёт реестр, а не форму.
+	if c, err := r.Cookie(cookieName); err == nil && s.auth != nil {
+		if _, ok := s.auth.Verify(c.Value); ok {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+	}
+	http.ServeFileFS(w, r, s.web, "login.html")
+}
+
+// who сообщает, кто вошёл. Нужен интерфейсу, чтобы показать имя и кнопку
+// выхода.
+func (s *Server) who(w http.ResponseWriter, r *http.Request) {
+	login := ""
+	if c, err := r.Cookie(cookieName); err == nil && s.auth != nil {
+		login, _ = s.auth.Verify(c.Value)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"login": login})
 }

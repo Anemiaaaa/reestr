@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -24,6 +25,7 @@ import (
 	"github.com/Anemiaaaa/reestr/internal/analyst"
 	"github.com/Anemiaaaa/reestr/internal/analyst/gateway"
 	"github.com/Anemiaaaa/reestr/internal/analyst/manual"
+	"github.com/Anemiaaaa/reestr/internal/auth"
 	"github.com/Anemiaaaa/reestr/internal/bitrix"
 	"github.com/Anemiaaaa/reestr/internal/config"
 	"github.com/Anemiaaaa/reestr/internal/httpapi"
@@ -112,6 +114,11 @@ func run() error {
 		go r.Run(ctx)
 	}
 
+	users, err := logins(log, *addr)
+	if err != nil {
+		return err
+	}
+
 	assets, err := ui(*dir)
 	if err != nil {
 		return err
@@ -119,7 +126,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:    *addr,
-		Handler: httpapi.New(svc, assets, log),
+		Handler: httpapi.New(svc, assets, log, users),
 		// Единственный таймаут, который здесь уместен: чтение запроса ограничено,
 		// а на сам обмен лимита нет — источник в сотню килобайт грузится столько,
 		// сколько грузится.
@@ -276,4 +283,63 @@ func rebuilder(svc *service.Service, log *slog.Logger) (*service.Rebuilder, erro
 
 	log.Info("ночная пересборка включена", "время", at, "пояс", name)
 	return service.NewRebuilder(svc, t.Hour(), t.Minute(), loc), nil
+}
+
+// logins собирает вход из настройки REESTR_USERS вида «логин:пароль,логин:пароль».
+//
+// Пустая настройка выключает вход, и это законно ровно в одном случае: сервер
+// слушает петлю. Тогда до него не дотянуться ни из сети, ни с соседней машины,
+// и пароль защищал бы от самого хозяина ноутбука.
+//
+// Как только адрес не петлевой, отсутствие входа — ошибка запуска. В реестре
+// лежат аудиты заказчиков с оборотами и сметами, а теперь ещё и журнал
+// инцидентов по сотрудникам; выставить это в сеть по невнимательности нельзя, и
+// «забыл настроить» не должно выглядеть как рабочий запуск.
+func logins(log *slog.Logger, addr string) (*auth.Auth, error) {
+	users := strings.TrimSpace(config.Env("REESTR_USERS", ""))
+	if users == "" {
+		if !loopback(addr) {
+			return nil, fmt.Errorf(
+				"адрес %s доступен снаружи, а REESTR_USERS не задан: вход обязателен", addr)
+		}
+		log.Warn("вход выключен: REESTR_USERS не задан", "адрес", addr)
+		return nil, nil
+	}
+
+	a, err := auth.New(users, config.Env("REESTR_SECRET", ""))
+	if err != nil {
+		return nil, fmt.Errorf("REESTR_USERS: %w", err)
+	}
+	log.Info("вход включён", "пользователи", strings.Join(a.Logins(), ", "))
+
+	// Пароль, совпадающий с логином, подбирается первой же попыткой. Об этом
+	// говорим при каждом запуске, а не один раз в документации: настройка, о
+	// которой напоминают, меняется, а та, о которой написали в README, живёт
+	// годами.
+	if weak := a.Weak(); len(weak) != 0 {
+		log.Warn("пароль совпадает с логином — смените до публикации в сеть",
+			"пользователи", strings.Join(weak, ", "))
+	}
+	// Без REESTR_SECRET подпись случайная, и перезапуск разлогинивает всех.
+	if config.Env("REESTR_SECRET", "") == "" {
+		log.Info("REESTR_SECRET не задан: после перезапуска придётся войти заново")
+	}
+	return a, nil
+}
+
+// loopback отвечает, слушает ли сервер только петлю.
+//
+// Пустой хост в адресе — это все интерфейсы, а не петля: «:8080» доступен
+// соседям по сети. Ошибка разбора трактуется как «не петля»: сомнение здесь
+// должно склонять к осторожности, а не к удобству.
+func loopback(addr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

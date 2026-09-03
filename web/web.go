@@ -10,7 +10,7 @@ import (
 	"io/fs"
 )
 
-//go:embed index.html app.css app.js
+//go:embed index.html login.html app.css app.js
 var files embed.FS
 
 // Files отдаёт файлы интерфейса из бинарника.

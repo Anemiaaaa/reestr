@@ -193,19 +193,51 @@ function drawChats(list) {
   return el("div", { class: "crumb", style: "margin-top:8px" }, "чат: " + line);
 }
 
+// drawWarns рисует предупреждения сводки.
+//
+// Пять цветных полос подряд кричали одинаково громко, и от этого не значило
+// ничего ни одно. Красное — то, из-за чего работа стоит, — остаётся на виду;
+// остальное сворачивается в строку и раскрывается по нажатию. Это ответ на
+// замечание заказчика о перегруженности, а не украшательство: убрать нельзя,
+// потому что в свёрнутом виде пробелы и переносы всё равно посчитаны и названы.
 function drawWarns(h) {
   const rows = [
-    ["!", h.overdueText, "warn warn--red"],
-    ["!", h.blockerText, "warn warn--red"],
-    ["?", h.gapsText, "warn"],
-    ["↔", h.shiftsText, "warn"],
-    ["✓", h.criteriaText, "warn warn--green"],
+    ["!", h.overdueText, "warn warn--red", true],
+    ["!", h.blockerText, "warn warn--red", true],
+    ["?", h.gapsText, "warn", false],
+    ["↔", h.shiftsText, "warn", false],
+    ["✓", h.criteriaText, "warn warn--green", false],
   ].filter(([, text]) => text);
 
   if (!rows.length) return null;
 
-  return el("div", { class: "warns" }, rows.map(([sign, text, cls]) =>
-    el("div", { class: cls }, el("span", { class: "warn__mark", text: sign }), el("span", { text }))));
+  const line = ([sign, text, cls]) =>
+    el("div", { class: cls }, el("span", { class: "warn__mark", text: sign }), el("span", { text }));
+
+  const loud = rows.filter(r => r[3]);
+  const quiet = rows.filter(r => !r[3]);
+
+  const box = el("div", { class: "warns" }, loud.map(line));
+  if (!quiet.length) return box;
+
+  const rest = el("div", { class: "warns", hidden: true }, quiet.map(line));
+  const more = el("button", {
+    class: "warns__more",
+    type: "button",
+    "aria-expanded": "false",
+    // Подпись без числительного с существительным: падежи считает сервер, а
+    // тут их согласовать нечем — «ещё 3 замечания» и «ещё 1 замечание»
+    // потребовали бы правил склонения в браузере.
+    text: "Показать остальные (" + quiet.length + ")",
+    onclick: () => {
+      rest.hidden = !rest.hidden;
+      more.setAttribute("aria-expanded", String(!rest.hidden));
+      more.hidden = !rest.hidden;
+    },
+  });
+
+  box.append(more, rest);
+  return box;
 }
 
 // --- срез ---
@@ -525,7 +557,12 @@ function render() {
         onclick: ev => pull(ev.currentTarget),
       })
       : null,
-    el("span", { class: "actions__note", text: "аналитик: " + b.slice.head.analyst + " · фактов: " + b.facts })));
+  ));
+
+  // Сведения о сборке — не действие, и в ряду кнопок читались как подпись к
+  // ним. Место им под заголовком, рядом с остальным, что описывает срез.
+  page.append(el("div", { class: "byline" },
+    "собрал: " + b.slice.head.analyst + " · фактов в журнале: " + b.facts));
 
   const panels = [
     ["slice", "Срез", null, () => drawSlice(b.slice)],
@@ -799,6 +836,7 @@ async function addTask() {
 async function boot() {
   $("#add-task").addEventListener("click", addTask);
   $("#open-journal").addEventListener("click", openJournal);
+  drawUser();
   window.addEventListener("hashchange", () => {
     const id = location.hash.slice(1);
     if (id && id !== state.current) open(id);
@@ -999,4 +1037,31 @@ async function addIncident() {
   } catch (e) {
     flash(e.message);
   }
+}
+
+// --- кто вошёл ---
+
+// drawUser показывает имя вошедшего и кнопку выхода.
+//
+// Без входа блок скрыт целиком: на локальном запуске без REESTR_USERS показывать
+// «выйти» некуда и незачем.
+async function drawUser() {
+  let login = "";
+  try {
+    login = (await api("/api/me")).login || "";
+  } catch {
+    // Не ответили — значит и показывать нечего. Ронять из-за этого страницу
+    // незачем: реестр читается и без подписи в углу.
+  }
+  if (!login) return;
+
+  $("#user-login").textContent = login;
+  $("#user").hidden = false;
+  $("#logout").addEventListener("click", async () => {
+    try {
+      await api("/api/logout", { method: "POST" });
+    } finally {
+      location.href = "/login";
+    }
+  });
 }

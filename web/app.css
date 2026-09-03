@@ -122,6 +122,10 @@ h1 {
 
 .warns { display: flex; flex-direction: column; gap: 4px; margin: 12px 0 0; }
 
+/* display:flex у класса перебивает браузерное [hidden]{display:none}, и
+   свёрнутый блок оставался на экране. */
+.warns[hidden] { display: none; }
+
 .warn {
   display: flex;
   align-items: baseline;
@@ -546,3 +550,121 @@ h1 {
 
 .diff__before { color: #8c2f2b; }
 .diff__after { color: #2f5c43; }
+
+/* --- страница входа --- */
+
+.login {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: var(--panel);
+}
+
+.login__box {
+  width: 320px;
+  padding: 28px 26px 24px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.login__title { font-size: 18px; font-weight: 600; }
+.login__sub {
+  font-size: 12.5px;
+  color: var(--faint);
+  margin-bottom: 14px;
+  line-height: 1.45;
+}
+
+.login input {
+  font: inherit;
+  padding: 7px 10px;
+  border: 1px solid var(--line-firm);
+  border-radius: 4px;
+  margin-bottom: 10px;
+}
+.login input:focus { outline: 2px solid var(--blue); outline-offset: -1px; }
+
+.login .btn { margin-top: 6px; }
+.login .err { margin: 0 0 4px; }
+
+/* --- кто вошёл --- */
+
+.side__user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--faint);
+  padding: 8px 8px 0;
+}
+.side__user button {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: var(--blue);
+  cursor: pointer;
+  padding: 0;
+}
+.side__user button:hover { text-decoration: underline; }
+
+/* --- «что к какому блоку относится» --- */
+
+/* Замечание заказчика было ровно об этом: в длинной прокрутке теряется, к
+   какому разделу относится то, что сейчас на экране. Полоса вкладок и заголовок
+   раздела прилипают к верху, поэтому ответ на вопрос виден всегда, а не только
+   в момент, когда до заголовка долистали. */
+
+.tabs {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg);
+  /* Тень вместо линии: линия у липкого элемента сливается с линией раздела,
+     который под него подъезжает. */
+  box-shadow: 0 1px 0 var(--line);
+}
+
+.sec__head {
+  position: sticky;
+  /* Ровно под полосой вкладок: заголовок раздела встаёт вторым ярусом, а не
+     прячется за ней. */
+  top: 35px;
+  z-index: 2;
+  background: var(--bg);
+  padding-top: 8px;
+}
+
+/* --- предупреждения --- */
+
+/* Пять цветных полос подряд кричали одинаково громко, и от этого не значило
+   ничего ни одно. Красные — то, из-за чего работа стоит, — остаются на виду;
+   остальное сворачивается в одну строку и раскрывается по нажатию. */
+
+.warns__more {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 0 0;
+  text-align: left;
+}
+.warns__more:hover { color: var(--text); text-decoration: underline; }
+
+/* --- строка под заголовком --- */
+
+/* «Аналитик» и «фактов» уехали из ряда кнопок: это не действие, а сведения о
+   том, кем и из чего собран срез. Рядом с кнопками они читались как подпись к
+   ним. */
+.byline {
+  font-size: 12.5px;
+  color: var(--faint);
+  margin-top: 10px;
+}
