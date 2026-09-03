@@ -31,12 +31,13 @@ var _ store.Store = (*Store)(nil)
 
 // state — то, что попадает в файл.
 type state struct {
-	Tasks     []domain.Task     `json:"tasks"`
-	ChatLinks []domain.ChatLink `json:"chatLinks"`
-	Sources   []domain.Source   `json:"sources"`
-	Facts     []domain.Fact     `json:"facts"`
-	Processes []domain.Process  `json:"processes"`
-	Slices    []domain.Slice    `json:"slices"`
+	Tasks     []domain.Task       `json:"tasks"`
+	ChatLinks []domain.ChatLink   `json:"chatLinks"`
+	Messages  []domain.RawMessage `json:"rawMessages"`
+	Sources   []domain.Source     `json:"sources"`
+	Facts     []domain.Fact       `json:"facts"`
+	Processes []domain.Process    `json:"processes"`
+	Slices    []domain.Slice      `json:"slices"`
 }
 
 // Store — хранилище реестра в JSON-файле.
@@ -229,6 +230,75 @@ func (s *Store) AdvanceChatCursor(_ context.Context, taskID, system, dialogID st
 	// Проверять существование задачи отдельно незачем: связи без задачи не
 	// бывает, и её отсутствие — тот же ответ «закреплять курсор некуда».
 	return fmt.Errorf("чат %s задачи %s: %w", dialogID, taskID, store.ErrNotFound)
+}
+
+// --- сырые сообщения ---
+
+// AddRawMessages переносит сообщения чата и отвечает, сколько из них новые.
+func (s *Store) AddRawMessages(_ context.Context, msgs []domain.RawMessage) (int, error) {
+	if len(msgs) == 0 {
+		return 0, nil
+	}
+	// Проверка до блокировки и до первой записи: пачка либо ложится целиком,
+	// либо не ложится вовсе.
+	for _, m := range msgs {
+		if m.Key() == "" {
+			return 0, fmt.Errorf("сообщение без адреса оригинала: %+v", m.External)
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Известные ключи собираются один раз, а не ищутся перебором на каждое
+	// сообщение: подтяжка приносит сотню за раз, и перебор по перебору дал бы
+	// квадрат на ровном месте.
+	known := make(map[string]bool, len(s.st.Messages))
+	for _, m := range s.st.Messages {
+		known[m.Key()] = true
+	}
+
+	added := 0
+	for _, m := range msgs {
+		key := m.Key()
+		// Повтор внутри самой пачки тоже отсекается: портал вправе прислать
+		// сообщение дважды в одном ответе, и в базе это поймал бы первичный ключ.
+		if known[key] {
+			continue
+		}
+		known[key] = true
+		s.st.Messages = append(s.st.Messages, m)
+		added++
+	}
+
+	if added == 0 {
+		// Записывать файл незачем: состояние не изменилось, а лишняя запись —
+		// лишний повод его повредить.
+		return 0, nil
+	}
+	if err := s.persist(); err != nil {
+		return 0, err
+	}
+	return added, nil
+}
+
+// RawMessages возвращает сообщения диалога: по дате события, при равных датах —
+// в порядке переноса. Порядок переноса здесь и есть порядок в срезе файла,
+// поэтому сортировка устойчивая.
+func (s *Store) RawMessages(_ context.Context, system, dialogID string) ([]domain.RawMessage, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []domain.RawMessage
+	for _, m := range s.st.Messages {
+		if m.External.System == system && m.External.ChatID == dialogID {
+			out = append(out, m)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].OccurredAt.Before(out[j].OccurredAt)
+	})
+	return out, nil
 }
 
 // AddSource добавляет источник. Источник без задачи допустим: это общая

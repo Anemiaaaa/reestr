@@ -46,6 +46,8 @@ func Run(t *testing.T, open New) {
 		{"TasksOrder", testTasksOrder},
 		{"ChatLink", testChatLink},
 		{"ChatCursor", testChatCursor},
+		{"RawMessages", testRawMessages},
+		{"RawMessagesRepeat", testRawMessagesRepeat},
 		{"Source", testSource},
 		{"SourcesOrder", testSourcesOrder},
 		{"SharedSource", testSharedSource},
@@ -247,6 +249,191 @@ func testChatLink(t *testing.T, st store.Store) {
 	// про закреплённые чаты можно у любой задачи.
 	if list, err := st.ChatLinks(ctx, "нет такой"); err != nil || len(list) != 0 {
 		t.Errorf("чаты неизвестной задачи: %d (%v)", len(list), err)
+	}
+}
+
+// testRawMessages: сообщение переносится как есть и принадлежит чату, а не
+// задаче. Привязка к задаче заставила бы хранить сообщение по копии на каждую
+// задачу, читающую этот чат, — а такое хранилище решает за заказчиком, чего оно
+// делать не вправе.
+func testRawMessages(t *testing.T, st store.Store) {
+	ctx := context.Background()
+
+	// Задачи здесь нет намеренно: сообщения кладутся до и независимо от того,
+	// какая задача их прочитает. Если реализация втихую потребует задачу, это
+	// вскроется прямо тут.
+	want := domain.RawMessage{
+		External: domain.ExternalRef{
+			System: domain.SystemBitrix, ChatID: "chat28", MessageID: "60",
+			URL: "https://portal.bitrix24.ru/online/?IM_DIALOG=chat28",
+		},
+		Author:     "Амируллах Муталибов",
+		AuthorID:   8,
+		Body:       "ключевой момент спецификации",
+		OccurredAt: utc(2026, time.August, 24),
+		FetchedAt:  utc(2026, time.September, 2),
+	}
+
+	added, err := st.AddRawMessages(ctx, []domain.RawMessage{want})
+	if err != nil {
+		t.Fatalf("AddRawMessages: %v", err)
+	}
+	if added != 1 {
+		t.Errorf("новых сообщений %d, хотели 1", added)
+	}
+
+	got, err := st.RawMessages(ctx, domain.SystemBitrix, "chat28")
+	if err != nil {
+		t.Fatalf("RawMessages: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("сообщений %d, хотели 1: %+v", len(got), got)
+	}
+
+	first := got[0]
+	switch {
+	case first.External != want.External:
+		t.Errorf("адрес оригинала искажён: %+v", first.External)
+	case first.Author != want.Author || first.AuthorID != want.AuthorID:
+		t.Errorf("автор = %q (%d)", first.Author, first.AuthorID)
+	case first.Body != want.Body:
+		t.Errorf("текст = %q", first.Body)
+	}
+	if !first.OccurredAt.Equal(want.OccurredAt) || !first.FetchedAt.Equal(want.FetchedAt) {
+		t.Errorf("даты: написано %v, перенесено %v", first.OccurredAt, first.FetchedAt)
+	}
+
+	// Системное сообщение хранится наравне с остальными: чтобы сослаться на
+	// сообщение, его надо иметь, а решать за разбором, что ему пригодится,
+	// подтяжка не вправе. Признаки при этом обязаны пережить запись — иначе
+	// системное сообщение попадёт в источники и станет цитатой в срезе.
+	service := domain.RawMessage{
+		External: domain.ExternalRef{
+			System: domain.SystemBitrix, ChatID: "chat28", MessageID: "56",
+		},
+		Body:      "изменил исполнителя",
+		Service:   true,
+		Redacted:  true,
+		FetchedAt: utc(2026, time.September, 2),
+	}
+	if _, err := st.AddRawMessages(ctx, []domain.RawMessage{service}); err != nil {
+		t.Fatalf("AddRawMessages системного: %v", err)
+	}
+	all, err := st.RawMessages(ctx, domain.SystemBitrix, "chat28")
+	if err != nil {
+		t.Fatalf("RawMessages: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("сообщений %d, хотели 2", len(all))
+	}
+	// Незаполненная дата события идёт первой: приписывать сообщение без даты к
+	// сегодняшнему дню нельзя, а среди свежего оно выглядело бы самым поздним.
+	if !all[0].Service || !all[0].Redacted {
+		t.Errorf("признаки системного сообщения потерялись: %+v", all[0])
+	}
+	if !all[0].OccurredAt.IsZero() {
+		t.Errorf("пустая дата события заполнилась: %v", all[0].OccurredAt)
+	}
+
+	// Чужой чат своих сообщений не отдаёт, и это пустой список, а не ошибка.
+	if list, err := st.RawMessages(ctx, domain.SystemBitrix, "chat99"); err != nil || len(list) != 0 {
+		t.Errorf("сообщения чужого чата: %d (%v)", len(list), err)
+	}
+	// Система входит в ключ: номер сообщения уникален внутри портала, а не
+	// вообще. Без неё чат-тёзка из другой системы отдал бы чужую переписку.
+	if list, err := st.RawMessages(ctx, "telegram", "chat28"); err != nil || len(list) != 0 {
+		t.Errorf("сообщения чата-тёзки из другой системы: %d (%v)", len(list), err)
+	}
+}
+
+// testRawMessagesRepeat: повторная подтяжка того же куска чата — обычный ход
+// событий, а не ошибка. Курсор ведём мы, портал вправе отдать перекрывающийся
+// кусок, и второй экземпляр сообщения означал бы переписку в двух копиях.
+func testRawMessagesRepeat(t *testing.T, st store.Store) {
+	ctx := context.Background()
+
+	msg := func(id, body string) domain.RawMessage {
+		return domain.RawMessage{
+			External: domain.ExternalRef{
+				System: domain.SystemBitrix, ChatID: "chat24", MessageID: id,
+			},
+			Body:      body,
+			FetchedAt: utc(2026, time.September, 2),
+		}
+	}
+
+	added, err := st.AddRawMessages(ctx, []domain.RawMessage{msg("40", "первое"), msg("44", "второе")})
+	if err != nil {
+		t.Fatalf("AddRawMessages: %v", err)
+	}
+	if added != 2 {
+		t.Fatalf("новых сообщений %d, хотели 2", added)
+	}
+
+	// Перекрывающаяся пачка: одно известное, одно новое. Счётчик обязан считать
+	// только новые — по нему подтяжка решает, двигать ли курсор.
+	added, err = st.AddRawMessages(ctx, []domain.RawMessage{msg("44", "второе"), msg("48", "третье")})
+	if err != nil {
+		t.Fatalf("AddRawMessages повторно: %v", err)
+	}
+	if added != 1 {
+		t.Errorf("новых сообщений %d, хотели 1", added)
+	}
+
+	// Повтор внутри одной пачки: портал вправе прислать сообщение дважды в
+	// одном ответе, и это не должно ни падать, ни удваивать запись.
+	added, err = st.AddRawMessages(ctx, []domain.RawMessage{msg("52", "четвёртое"), msg("52", "четвёртое")})
+	if err != nil {
+		t.Fatalf("AddRawMessages с дублем внутри пачки: %v", err)
+	}
+	if added != 1 {
+		t.Errorf("новых сообщений %d, хотели 1", added)
+	}
+
+	got, err := st.RawMessages(ctx, domain.SystemBitrix, "chat24")
+	if err != nil {
+		t.Fatalf("RawMessages: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("сообщений %d, хотели 4: %+v", len(got), got)
+	}
+
+	// Текст первой записи повтором не переписывается. Это не придирка: правка
+	// перенесённого сообщения задним числом переписала бы то, на что уже мог
+	// сослаться собранный срез.
+	if _, err := st.AddRawMessages(ctx, []domain.RawMessage{msg("40", "подменённое")}); err != nil {
+		t.Fatalf("AddRawMessages подменой: %v", err)
+	}
+	after, err := st.RawMessages(ctx, domain.SystemBitrix, "chat24")
+	if err != nil {
+		t.Fatalf("RawMessages: %v", err)
+	}
+	for _, m := range after {
+		if m.External.MessageID == "40" && m.Body != "первое" {
+			t.Errorf("текст перенесённого сообщения переписан: %q", m.Body)
+		}
+	}
+
+	// Сообщение без адреса оригинала опознать нечем, и при следующей подтяжке
+	// оно приехало бы вторым экземпляром. Отвергается вся пачка: наполовину
+	// записанная подтяжка оставила бы курсор в положении, которому ничего не
+	// соответствует.
+	orphan := domain.RawMessage{Body: "ниоткуда", FetchedAt: utc(2026, time.September, 2)}
+	if _, err := st.AddRawMessages(ctx, []domain.RawMessage{msg("60", "годное"), orphan}); err == nil {
+		t.Error("пачка с сообщением без адреса оригинала принята")
+	}
+	final, err := st.RawMessages(ctx, domain.SystemBitrix, "chat24")
+	if err != nil {
+		t.Fatalf("RawMessages: %v", err)
+	}
+	if len(final) != 4 {
+		t.Errorf("сообщений %d, хотели 4: годное из отвергнутой пачки не должно было записаться", len(final))
+	}
+
+	// Пустая пачка — не ошибка: подтяжка сходила в портал и не принесла нового,
+	// и это обычный исход, а не повод падать.
+	if added, err := st.AddRawMessages(ctx, nil); err != nil || added != 0 {
+		t.Errorf("пустая пачка: %d (%v)", added, err)
 	}
 }
 

@@ -267,6 +267,90 @@ func scanSource(row pgx.Row) (domain.Source, error) {
 	return out, nil
 }
 
+// --- сырые сообщения ---
+
+const rawMessageCols = `system, dialog_id, message_id, author_id, author, body,
+	occurred_at, fetched_at, service, redacted, url`
+
+func (s *Store) AddRawMessages(ctx context.Context, msgs []domain.RawMessage) (int, error) {
+	if len(msgs) == 0 {
+		return 0, nil
+	}
+	// Проверка до вставки, а не по ходу: пачка либо ложится целиком, либо не
+	// ложится вовсе, и решить это надо до того, как записана первая строка.
+	for _, m := range msgs {
+		if m.Key() == "" {
+			return 0, fmt.Errorf("сообщение без адреса оригинала: %+v", m.External)
+		}
+	}
+
+	// ON CONFLICT DO NOTHING, а не проверка существования запросом: между
+	// проверкой и вставкой прошла бы вторая подтяжка, и защита от дублей
+	// держалась бы на удаче. Здесь её держит первичный ключ.
+	const q = `INSERT INTO raw_messages (` + rawMessageCols + `)
+	           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	           ON CONFLICT (system, dialog_id, message_id) DO NOTHING`
+
+	batch := &pgx.Batch{}
+	for _, m := range msgs {
+		batch.Queue(q, m.External.System, m.External.ChatID, m.External.MessageID,
+			m.AuthorID, m.Author, m.Body,
+			nullTime(m.OccurredAt), nullTime(m.FetchedAt),
+			m.Service, m.Redacted, m.External.URL)
+	}
+
+	res := s.pool.SendBatch(ctx, batch)
+	defer res.Close()
+
+	added := 0
+	for i := range msgs {
+		tag, err := res.Exec()
+		if err != nil {
+			return 0, fmt.Errorf("перенос сообщения %s: %w", msgs[i].Key(), err)
+		}
+		// Ноль затронутых строк — сообщение уже было. Считаем только новые:
+		// подтяжка по этому числу решает, есть ли смысл двигать курсор.
+		added += int(tag.RowsAffected())
+	}
+	if err := res.Close(); err != nil {
+		return 0, fmt.Errorf("перенос сообщений чата: %w", err)
+	}
+	return added, nil
+}
+
+func (s *Store) RawMessages(ctx context.Context, system, dialogID string) ([]domain.RawMessage, error) {
+	// Порядок тот же, что у источников: по дате события, при равных — по
+	// порядку переноса. NULLS FIRST, потому что сообщение без даты нельзя
+	// приписывать к сегодняшнему дню.
+	const q = `SELECT ` + rawMessageCols + ` FROM raw_messages
+	           WHERE system = $1 AND dialog_id = $2
+	           ORDER BY occurred_at NULLS FIRST, seq`
+
+	rows, err := s.pool.Query(ctx, q, system, dialogID)
+	if err != nil {
+		return nil, fmt.Errorf("чтение сообщений чата %s: %w", dialogID, err)
+	}
+	defer rows.Close()
+
+	var out []domain.RawMessage
+	for rows.Next() {
+		var (
+			m                 domain.RawMessage
+			occurred, fetched *time.Time
+		)
+		err := rows.Scan(&m.External.System, &m.External.ChatID, &m.External.MessageID,
+			&m.AuthorID, &m.Author, &m.Body,
+			&occurred, &fetched, &m.Service, &m.Redacted, &m.External.URL)
+		if err != nil {
+			return nil, fmt.Errorf("чтение сообщений чата %s: %w", dialogID, err)
+		}
+		m.OccurredAt = timeOf(occurred)
+		m.FetchedAt = timeOf(fetched)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) AddSource(ctx context.Context, src domain.Source) error {
 	// Задача проверяется до вставки, а не внешним ключом: у общего источника
 	// TaskID пуст, и ключ запретил бы его вовсе.

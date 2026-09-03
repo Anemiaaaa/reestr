@@ -59,7 +59,7 @@ func truncate(t *testing.T, s *Store) {
 	// требует перечислить все зависимые таблицы в том же TRUNCATE. Список растёт
 	// вместе со схемой: новая таблица со ссылкой на tasks, забытая здесь, валит
 	// весь прогон на очистке, а не на проверяемом поведении.
-	const q = `TRUNCATE slice_sources, slices, processes, facts, sources, chat_links, tasks RESTART IDENTITY`
+	const q = `TRUNCATE slice_sources, slices, processes, facts, sources, raw_messages, chat_links, tasks RESTART IDENTITY`
 
 	if _, err := s.pool.Exec(context.Background(), q); err != nil {
 		t.Fatalf("очистка базы: %v", err)
