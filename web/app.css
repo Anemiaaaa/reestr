@@ -52,38 +52,51 @@ body {
   min-height: 0;
 }
 
-.side__head { padding: 14px 14px 10px; }
-.side__title { font-weight: 600; font-size: 14px; }
-.side__sub { color: var(--faint); font-size: 12px; margin-top: 2px; }
+.side__head { padding: 18px 16px 12px; }
+.side__title { font-weight: 600; font-size: 15px; letter-spacing: -.01em; }
+.side__sub { color: var(--faint); font-size: 11.5px; margin-top: 3px; }
 
-.side__list { flex: 1; overflow-y: auto; padding: 4px 6px; min-height: 0; }
+.side__list { flex: 1; overflow-y: auto; padding: 4px 8px 8px; min-height: 0; }
 
-.side__foot { padding: 8px; border-top: 1px solid var(--line); }
+.side__foot {
+  padding: 10px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+}
 
+/* Полоса слева у выбранной задачи вместо заливки: заливка на светлой панели
+   почти не видна, а полоса читается сразу и не пачкает фон. */
 .item {
   display: block;
   width: 100%;
   text-align: left;
-  padding: 7px 8px;
+  padding: 8px 10px;
   border: 0;
-  border-radius: 4px;
+  border-left: 2px solid transparent;
+  border-radius: 0 5px 5px 0;
   background: transparent;
   cursor: pointer;
   font: inherit;
   color: inherit;
 }
 .item:hover { background: var(--hover); }
-.item[aria-current="true"] { background: rgba(55, 53, 47, .1); }
+.item[aria-current="true"] {
+  background: var(--bg);
+  border-left-color: var(--blue);
+  box-shadow: 0 1px 2px rgba(55, 53, 47, .06);
+}
 
 .item__title {
   font-size: 13.5px;
   font-weight: 500;
+  line-height: 1.35;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.item__meta { font-size: 11.5px; color: var(--faint); margin-top: 2px; }
+.item__meta { font-size: 11.5px; color: var(--faint); margin-top: 3px; }
 .item__meta--warn { color: var(--red); }
 
 /* --- основная колонка --- */
@@ -92,53 +105,85 @@ body {
 
 .empty { padding: 40px; color: var(--faint); }
 
-.page { max-width: 940px; margin: 0 auto; padding: 40px 56px 96px; }
+.page { max-width: 940px; margin: 0 auto; padding: 44px 56px 120px; }
 
-.crumb { font-size: 12.5px; color: var(--faint); }
+.crumb { font-size: 12.5px; color: var(--faint); line-height: 1.45; }
 
 h1 {
-  font-size: 30px;
-  line-height: 1.25;
-  font-weight: 700;
-  margin: 6px 0 14px;
-  letter-spacing: -.01em;
+  font-size: 29px;
+  line-height: 1.22;
+  font-weight: 650;
+  margin: 8px 0 20px;
+  letter-spacing: -.018em;
+  /* Заголовок задачи бывает длинным и с переносами внутри слов — держим его
+     цельным блоком, а не рваной лесенкой. */
+  text-wrap: balance;
 }
 
 /* --- сводка --- */
 
+/* Сетка, а не перенос по строке. На flex-wrap ячейки разъезжались: готовность
+   с полосой растягивалась на весь остаток, а «Срез» с датой ужимался до двух
+   строк. Сетка даёт равные колонки и одинаковые отбивки при любой ширине. */
 .head {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 22px;
-  padding: 14px 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 16px 20px;
+  padding: 18px 20px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--panel);
 }
-.head__cell { min-width: 96px; }
-.head__label { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; }
-.head__value { font-size: 14px; font-weight: 500; margin-top: 2px; }
-.head__value--warn { color: var(--red); }
 
-.warns { display: flex; flex-direction: column; gap: 4px; margin: 12px 0 0; }
+/* Растяжки у готовности нет намеренно. Заняв две колонки, она выталкивала
+   «Срез» на вторую строку, и сводка из одной ровной ленты превращалась в
+   лесенку. Полосе хватает и одной колонки. */
+
+.head__label {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: .07em;
+}
+.head__value {
+  font-size: 15px;
+  font-weight: 500;
+  margin-top: 4px;
+  line-height: 1.35;
+}
+.head__value--warn { color: var(--red); }
+.head__value .crumb { margin-top: 2px; }
+
+.warns { display: flex; flex-direction: column; gap: 2px; margin: 16px 0 0; }
 
 /* display:flex у класса перебивает браузерное [hidden]{display:none}, и
    свёрнутый блок оставался на экране. */
 .warns[hidden] { display: none; }
 
+/* Боковая линейка вместо заливки во всю ширину. Залитые плашки читались как
+   ряд кнопок и перетягивали внимание с самого среза; линейка отмечает строку,
+   не выкрикивая её. */
 .warn {
   display: flex;
   align-items: baseline;
-  gap: 7px;
-  font-size: 13px;
-  padding: 6px 10px;
-  border-radius: 4px;
-  background: var(--amber-bg);
-  color: #7a5a13;
+  gap: 9px;
+  font-size: 13.5px;
+  padding: 5px 0 5px 12px;
+  border-left: 2px solid var(--amber);
+  color: var(--text);
 }
-.warn--red { background: var(--red-bg); color: #8c2f2b; }
-.warn--green { background: var(--green-bg); color: #2f5c43; }
-.warn__mark { flex: none; }
+.warn--red { border-left-color: var(--red); }
+.warn--green { border-left-color: var(--green); }
+
+.warn__mark {
+  flex: none;
+  color: var(--amber);
+  font-size: 12px;
+  width: 10px;
+}
+.warn--red .warn__mark { color: var(--red); }
+.warn--green .warn__mark { color: var(--green); }
 
 /* --- полоса готовности --- */
 
@@ -154,37 +199,53 @@ h1 {
 
 /* --- разделы --- */
 
-.sec { margin-top: 34px; }
+.sec { margin-top: 40px; }
 
 .sec__head {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 12px;
   border-bottom: 1px solid var(--line);
-  padding-bottom: 6px;
-  margin-bottom: 14px;
+  padding-bottom: 8px;
+  margin-bottom: 18px;
 }
+
+/* Номер раздела набран как номер страницы в книге: мельче текста, в отдельной
+   колонке одинаковой ширины, чтобы заголовки стояли по одной вертикали. */
 .sec__n {
   font-size: 11px;
   color: var(--faint);
   font-variant-numeric: tabular-nums;
+  min-width: 12px;
+  text-align: right;
 }
-.sec__title { font-size: 17px; font-weight: 600; }
+.sec__title { font-size: 18px; font-weight: 600; letter-spacing: -.01em; }
 .sec__note { font-size: 12.5px; color: var(--faint); margin-left: auto; }
 
 /* --- поля --- */
 
-.rows { display: grid; gap: 2px; }
+.rows { display: grid; }
 
 .row {
   display: grid;
-  grid-template-columns: 168px 1fr;
-  gap: 14px;
-  padding: 6px 0;
+  grid-template-columns: 176px 1fr;
+  gap: 16px;
+  padding: 9px 0;
   align-items: start;
+  /* Тонкая линейка между строками: глаз ведёт от подписи к значению, не
+     перескакивая на соседнюю строку. Заметнее рамки и тише полосатости. */
+  border-bottom: 1px solid var(--line);
 }
+.row:last-child { border-bottom: 0; }
+
 .row__label { font-size: 13px; color: var(--muted); padding-top: 1px; }
-.row__value { font-size: 14px; min-width: 0; }
+.row__value {
+  font-size: 14.5px;
+  min-width: 0;
+  /* Строка длиннее семидесяти знаков читается тяжело: глаз теряет начало
+     следующей. Значения бывают в абзац, и ширину им стоит ограничить. */
+  max-width: 62ch;
+}
 
 .miss { color: var(--faint); font-style: italic; }
 
@@ -382,20 +443,36 @@ h1 {
 .btn {
   font: inherit;
   font-size: 13px;
-  padding: 5px 11px;
+  font-weight: 500;
+  padding: 6px 13px;
   border: 1px solid var(--line-firm);
-  border-radius: 4px;
+  border-radius: 5px;
   background: var(--bg);
   color: var(--text);
   cursor: pointer;
 }
-.btn:hover { background: var(--hover); }
-.btn--primary { background: var(--blue); border-color: var(--blue); color: #fff; }
-.btn--primary:hover { background: #1b74ca; }
+.btn:hover { background: var(--hover); border-color: rgba(55, 53, 47, .26); }
+.btn--primary {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(35, 131, 226, .28);
+}
+.btn--primary:hover { background: #1b74ca; border-color: #1b74ca; }
 .btn--wide { width: 100%; }
-.btn[disabled] { opacity: .5; cursor: default; }
+.btn[disabled] { opacity: .5; cursor: default; box-shadow: none; }
 
-.actions { display: flex; gap: 8px; align-items: center; margin: 16px 0 0; }
+/* Обводка по клавиатуре, но не по мыши: :focus-visible отличает одно от
+   другого, а рамка вокруг только что нажатой кнопки выглядит как ошибка. */
+.btn:focus-visible,
+.tab:focus-visible,
+.item:focus-visible,
+.mark:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+.actions { display: flex; gap: 8px; align-items: center; margin: 20px 0 0; flex-wrap: wrap; }
 .actions__note { font-size: 12px; color: var(--faint); }
 
 /* --- источники --- */
@@ -749,3 +826,86 @@ h1 {
   font: inherit;
   font-size: 13px;
 }
+
+/* --- общая отделка --- */
+
+/* Выделение текста в тон интерфейсу: синий по умолчанию у каждого браузера
+   свой, и на светлом фоне он бывает ядовитым. */
+::selection { background: rgba(35, 131, 226, .18); }
+
+/* Полосы прокрутки тоньше и тише. В реестре прокручиваются две колонки, и
+   системная полоса шириной в палец забирает место у списка задач. */
+.main, .side__list, .field__list {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(55, 53, 47, .22) transparent;
+}
+
+/* Карточки чуть мягче: рамка вместо тени, тень только под наведением — так
+   список читается как перечень, а не как груда плиток. */
+.card { transition: border-color .12s ease, box-shadow .12s ease; }
+.card:hover { border-color: var(--line-firm); }
+
+/* Пустой экран не должен выглядеть поломкой. */
+.empty {
+  padding: 56px 40px;
+  color: var(--faint);
+  font-size: 14px;
+  text-align: center;
+}
+
+/* Вкладки: подчёркивание толще и ближе к тексту, счётчик — тише. */
+.tab { padding: 8px 12px; }
+.tab[aria-selected="true"] { border-bottom-width: 2px; }
+.tab__n { font-variant-numeric: tabular-nums; }
+
+/* Подпись под заголовком набрана чуть просторнее: это служебная строка, и
+   плотный набор делал её похожей на текст среза. */
+.byline { letter-spacing: .01em; }
+
+/* Полоса готовности: плавный рост, чтобы пересборка была видна движением, а не
+   мельканием. */
+.bar__fill { transition: width .35s ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bar__fill, .card { transition: none; }
+}
+
+/* --- узкий экран --- */
+
+/* Реестр смотрят и с ноутбука, и со второго монитора вполовину ширины. На
+   узком боковая колонка ужимается, а поля перестают делиться на две колонки —
+   подпись встаёт над значением. */
+/* На ноутбучном экране широкие поля страницы съедают место, которого и так
+   мало: сводка перестаёт помещаться в одну строку. */
+@media (max-width: 1200px) {
+  .page { padding: 36px 32px 100px; }
+}
+
+@media (max-width: 900px) {
+  .app { grid-template-columns: 210px 1fr; }
+  .page { padding: 28px 22px 96px; }
+  h1 { font-size: 24px; }
+  .row { grid-template-columns: 1fr; gap: 2px; }
+  .row__label { color: var(--faint); font-size: 12px; }
+}
+
+/* Строка «кто вошёл» — часть подвала, а не отдельная полоска: рамка сверху
+   отделяет её от списка задач вместе с кнопками. */
+.side__user {
+  border-top: 1px solid var(--line);
+  padding: 10px 12px 0;
+  margin-top: auto;
+}
+.side__foot { border-top: 0; padding-top: 8px; }
+
+/* Строка про чат бывает длинной и уводит взгляд от сводки. Оставляем её
+   тихой и в один абзац, без разрыва посреди номера сообщения. */
+.crumb--chat {
+  margin-top: 10px;
+  padding-left: 12px;
+  border-left: 2px solid var(--line);
+}
+
+/* Пояснения под заголовком не тянутся во всю ширину: строка в сто знаков
+   читается тяжело, глаз теряет начало следующей. */
+.page > .crumb { max-width: 68ch; }

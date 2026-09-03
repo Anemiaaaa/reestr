@@ -167,7 +167,7 @@ function drawHead(h) {
   box.append(cell("Этап", val(h.stage)));
 
   const readiness = el("div", {}, val(h.readiness), bar(h.readinessShare));
-  box.append(el("div", { class: "head__cell", style: "min-width:200px;flex:1" },
+  box.append(el("div", { class: "head__cell head__cell--wide" },
     el("div", { class: "head__label", text: "Готовность" }),
     el("div", { class: "head__value" }, readiness)));
 
@@ -190,7 +190,7 @@ function drawChats(list) {
     const notes = [c.taskRef, c.syncText].filter(Boolean);
     return notes.length ? c.label + " (" + notes.join(", ") + ")" : c.label;
   }).join(" · ");
-  return el("div", { class: "crumb", style: "margin-top:8px" }, "чат: " + line);
+  return el("div", { class: "crumb crumb--chat" }, "чат: " + line);
 }
 
 // drawWarns рисует предупреждения сводки.
