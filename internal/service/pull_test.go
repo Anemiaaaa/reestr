@@ -185,6 +185,110 @@ func TestPullChats(t *testing.T) {
 	}
 }
 
+// TestPullMakesSource: перенесённая переписка становится материалом для
+// разбора. Без этого подтяжка складывает сообщения в журнал, до которого
+// разбору не дотянуться, — и кнопка «Подтянуть переписку» ничего не меняет в
+// срезе.
+func TestPullMakesSource(t *testing.T) {
+	p := &fakePortal{msgs: []portalMessage{
+		{ID: 40, Text: "чат создан", Author: 0,
+			Date: time.Date(2026, time.August, 24, 16, 0, 0, 0, time.UTC)},
+		msg(44, "срок двигаем на 20 июня"),
+		msg(48, "жду доступ к контуру"),
+	}}
+	s, taskID := pinned(t, p)
+	ctx := context.Background()
+
+	got, err := s.PullChats(ctx, taskID)
+	if err != nil {
+		t.Fatalf("PullChats: %v", err)
+	}
+	if got[0].SourceID == "" {
+		t.Fatal("источник из переписки не заведён")
+	}
+
+	sources, err := s.Sources(ctx, taskID)
+	if err != nil {
+		t.Fatalf("Sources: %v", err)
+	}
+	// Один источник на подтяжку, а не один на сообщение: сообщений в чате сотни,
+	// и каждое отдельным источником превратило бы список в ленту чата.
+	if len(sources) != 1 {
+		t.Fatalf("источников %d, хотели 1: %+v", len(sources), sources)
+	}
+
+	src := sources[0]
+	switch {
+	case src.Kind != domain.KindCorrespondence:
+		t.Errorf("вид источника = %q", src.Kind)
+	case src.TaskID != taskID:
+		t.Errorf("источник не привязан к задаче: %q", src.TaskID)
+	case !strings.Contains(src.Body, "срок двигаем на 20 июня"):
+		t.Errorf("текста сообщения нет в источнике: %q", src.Body)
+	}
+
+	// Системные сообщения портала в источник не попадают: цитировать в них
+	// нечего, а разбор они заваливают шумом. В журнале сообщений они при этом
+	// остаются — он обязан быть полным.
+	if strings.Contains(src.Body, "чат создан") {
+		t.Errorf("системное сообщение попало в источник: %q", src.Body)
+	}
+	stored, err := s.ChatMessages(ctx, taskID)
+	if err != nil {
+		t.Fatalf("ChatMessages: %v", err)
+	}
+	if len(stored) != 3 {
+		t.Errorf("сообщений в журнале %d, хотели 3", len(stored))
+	}
+
+	// Автор и дата попадают в текст: разбор цитирует отсюда, и без них цитата
+	// не даёт ни времени, ни говорящего.
+	if !strings.Contains(src.Body, "Амируллах Муталибов") {
+		t.Errorf("автора нет в тексте источника: %q", src.Body)
+	}
+
+	// Повторная подтяжка нового источника не заводит: переносить нечего.
+	if _, err := s.PullChats(ctx, taskID); err != nil {
+		t.Fatalf("вторая подтяжка: %v", err)
+	}
+	after, err := s.Sources(ctx, taskID)
+	if err != nil {
+		t.Fatalf("Sources: %v", err)
+	}
+	if len(after) != 1 {
+		t.Errorf("источников после второй подтяжки %d, хотели 1", len(after))
+	}
+}
+
+// TestPullOnlyServiceMessages: чат, где одни системные сообщения, источника не
+// даёт. Пустой источник в списке — обещание материала, которого нет.
+func TestPullOnlyServiceMessages(t *testing.T) {
+	p := &fakePortal{msgs: []portalMessage{
+		{ID: 40, Text: "чат создан", Author: 0,
+			Date: time.Date(2026, time.August, 24, 16, 0, 0, 0, time.UTC)},
+	}}
+	s, taskID := pinned(t, p)
+	ctx := context.Background()
+
+	got, err := s.PullChats(ctx, taskID)
+	if err != nil {
+		t.Fatalf("PullChats: %v", err)
+	}
+	if got[0].Added != 1 {
+		t.Errorf("новых сообщений %d, хотели 1", got[0].Added)
+	}
+	if got[0].SourceID != "" {
+		t.Errorf("заведён источник из одних системных сообщений: %q", got[0].SourceID)
+	}
+	sources, err := s.Sources(ctx, taskID)
+	if err != nil {
+		t.Fatalf("Sources: %v", err)
+	}
+	if len(sources) != 0 {
+		t.Errorf("источников %d, хотели 0: %+v", len(sources), sources)
+	}
+}
+
 // TestPullChatsRepeat: вторая подтяжка продолжает с курсора, а не перечитывает
 // чат. Ошибка здесь стоит дорого и молча: перечитанный чат приедет вторым
 // экземпляром каждого сообщения.

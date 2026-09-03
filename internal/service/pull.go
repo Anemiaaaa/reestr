@@ -2,11 +2,14 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/Anemiaaaa/reestr/internal/bitrix"
 	"github.com/Anemiaaaa/reestr/internal/domain"
+	"github.com/Anemiaaaa/reestr/internal/store"
 )
 
 // pullPageLimit — сколько сообщений просить у портала за один вызов. Больше
@@ -41,6 +44,10 @@ type PullResult struct {
 	// LastMessageID — курсор после подтяжки. Совпадает с прежним, если нового
 	// ничего не пришло.
 	LastMessageID int
+
+	// SourceID — источник, заведённый из перенесённой переписки. Пусто, если
+	// заводить было не из чего.
+	SourceID string
 }
 
 // PullChats переносит в реестр новые сообщения всех чатов, закреплённых за
@@ -89,6 +96,12 @@ func (s *Service) pullChat(ctx context.Context, link domain.ChatLink) (PullResul
 		LastMessageID: link.LastMessageID,
 	}
 
+	// Перенесённое за эту подтяжку копится целиком: источник заводится один на
+	// подтяжку, а не один на страницу. Страница — деталь разговора с порталом, и
+	// делить по ней материал значило бы показывать человеку границы, которых в
+	// переписке нет.
+	var moved []domain.RawMessage
+
 	for page := 0; page < pullMaxPages; page++ {
 		msgs, err := s.portal.Messages(ctx, link.DialogID, res.LastMessageID, pullPageLimit)
 		if err != nil {
@@ -107,6 +120,7 @@ func (s *Service) pullChat(ctx context.Context, link domain.ChatLink) (PullResul
 				highest = m.ID
 			}
 		}
+		moved = append(moved, raw...)
 
 		added, err := s.store.AddRawMessages(ctx, raw)
 		if err != nil {
@@ -138,10 +152,113 @@ func (s *Service) pullChat(ctx context.Context, link domain.ChatLink) (PullResul
 		return PullResult{}, err
 	}
 
+	// Источник заводится после курсора, а не до: пока курсор не сдвинут,
+	// подтяжка не закончена, и материал, выставленный разбору раньше времени,
+	// пришлось бы отзывать — а источники не отзываются.
+	if res.SourceID, err = s.sourceFrom(ctx, link, moved); err != nil {
+		return PullResult{}, err
+	}
+
 	s.log.Info("сообщения перенесены",
 		"задача", link.TaskID, "чат", link.DialogID,
-		"получено", res.Fetched, "новых", res.Added, "курсор", res.LastMessageID)
+		"получено", res.Fetched, "новых", res.Added, "курсор", res.LastMessageID,
+		"источник", res.SourceID)
 	return res, nil
+}
+
+// sourceFrom заводит из перенесённой переписки один источник.
+//
+// Один на подтяжку, а не один на сообщение. Сообщений в чате сотни, и каждое
+// отдельным источником превратило бы список источников задачи в ленту чата —
+// ровно ту перегруженность, на которую жаловался заказчик. Разбору же удобнее
+// читать переписку подряд: реплика в отрыве от соседних чаще всего непонятна.
+//
+// Системные сообщения портала в источник не попадают. «Задача завершена» и
+// «изменён исполнитель» цитировать не в чем: в срезе от них нет ни факта, ни
+// цитаты, а разбор они заваливают шумом. В raw_messages они при этом остаются —
+// журнал переписки обязан быть полным.
+func (s *Service) sourceFrom(ctx context.Context, link domain.ChatLink, msgs []domain.RawMessage) (string, error) {
+	usable := make([]domain.RawMessage, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Usable() {
+			usable = append(usable, m)
+		}
+	}
+	if len(usable) == 0 {
+		return "", nil
+	}
+
+	last := usable[len(usable)-1]
+	src := domain.Source{
+		ID:     newID("s"),
+		TaskID: link.TaskID,
+		Kind:   domain.KindCorrespondence,
+		Title:  chatTitle(link) + ", сообщения " + msgRange(usable),
+		Body:   messagesText(usable),
+		// Дата события — дата последнего сообщения: в хронологии эта порция
+		// переписки стоит там, где закончилась, а не там, где началась.
+		OccurredAt: last.OccurredAt,
+		UploadedAt: s.now(),
+		// Адрес оригинала — последнее сообщение порции. Он же ключ, по которому
+		// повторная подтяжка не заведёт второй такой же источник: курсор не
+		// откатывается, значит и ключ не повторится.
+		External: last.External,
+	}
+
+	if err := s.store.AddSource(ctx, src); err != nil {
+		// Источник с таким адресом уже есть — значит эту порцию уже переносили.
+		// Это не сбой: подтяжку могли запустить дважды подряд.
+		if errors.Is(err, store.ErrExists) {
+			s.log.Info("переписка уже была заведена источником",
+				"задача", link.TaskID, "чат", link.DialogID)
+			return "", nil
+		}
+		return "", err
+	}
+	return src.ID, nil
+}
+
+// chatTitle — подпись чата для названия источника.
+func chatTitle(link domain.ChatLink) string {
+	if title := strings.TrimSpace(link.Title); title != "" {
+		return "Переписка: " + title
+	}
+	return "Переписка в чате " + link.DialogID
+}
+
+// msgRange — диапазон номеров сообщений, чтобы по названию источника было видно,
+// какая именно часть чата в нём лежит.
+func msgRange(msgs []domain.RawMessage) string {
+	first, last := msgs[0].External.MessageID, msgs[len(msgs)-1].External.MessageID
+	if first == last {
+		return "№" + first
+	}
+	return "№" + first + "–№" + last
+}
+
+// messagesText складывает переписку в текст, пригодный и для разбора, и для
+// чтения человеком.
+//
+// Формат намеренно простой: дата, автор, текст. Разбор будет цитировать отсюда
+// дословно, и всякое украшательство — рамки, отступы, разметка — попадёт в
+// цитату и не сойдётся с источником при проверке.
+func messagesText(msgs []domain.RawMessage) string {
+	var b strings.Builder
+	for i, m := range msgs {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		if !m.OccurredAt.IsZero() {
+			b.WriteString(domain.FormatDate(m.OccurredAt))
+			b.WriteString(", ")
+		}
+		if m.Author != "" {
+			b.WriteString(m.Author)
+			b.WriteString(": ")
+		}
+		b.WriteString(m.Body)
+	}
+	return b.String()
 }
 
 // rawMessage переводит сообщение портала в запись реестра.
