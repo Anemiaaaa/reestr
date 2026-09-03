@@ -811,3 +811,96 @@ func newDiff(before, after domain.Slice, changes []domain.SliceChange) diff {
 	}
 	return d
 }
+
+// --- журнал инцидентов ---
+
+// incident — случай в журнале.
+type incident struct {
+	ID         string `json:"id"`
+	Employee   string `json:"employee"`
+	TaskID     string `json:"taskId"`
+	TaskTitle  string `json:"taskTitle,omitempty"`
+	At         string `json:"at"`
+	CreatedAt  string `json:"createdAt"`
+	Block      string `json:"block"`
+	BlockLabel string `json:"blockLabel"`
+	Text       string `json:"text"`
+	External   bool   `json:"external"`
+
+	// Note объясняет, почему внешняя помеха записана, но в оценку не идёт.
+	// Иначе строка в журнале читается как претензия к человеку.
+	Note string `json:"note,omitempty"`
+}
+
+func newIncidents(list []domain.Incident, titles map[string]string) []incident {
+	out := make([]incident, 0, len(list))
+	for _, in := range list {
+		v := incident{
+			ID: in.ID, Employee: in.Employee, TaskID: in.TaskID,
+			TaskTitle:  titles[in.TaskID],
+			At:         domain.FormatDate(in.At),
+			CreatedAt:  domain.FormatDate(in.CreatedAt),
+			Block:      string(in.Block),
+			BlockLabel: in.Block.Label(),
+			Text:       in.Text,
+			External:   in.External,
+		}
+		if in.External {
+			v.Note = "вне зоны контроля специалиста — в оценку не идёт"
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// kpiBlock — блок оценки для выпадающего списка формы.
+type kpiBlock struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+func newKPIBlocks() []kpiBlock {
+	blocks := domain.KPIBlocks()
+	out := make([]kpiBlock, 0, len(blocks))
+	for _, b := range blocks {
+		// Вес в подписи: он объясняет, почему блоки не равны между собой, и
+		// избавляет от обращения к презентации.
+		out = append(out, kpiBlock{
+			Value: string(b),
+			Label: fmt.Sprintf("%s (%.0f%%)", b.Label(), b.Weight()*100),
+		})
+	}
+	return out
+}
+
+// journal — ответ журнала целиком.
+type journal struct {
+	Incidents []incident `json:"incidents"`
+	Blocks    []kpiBlock `json:"blocks"`
+
+	// Text — сводка одной строкой. Считается здесь, а не в браузере: правило
+	// «внешняя помеха в оценку не идёт» одно, и применять его в двух местах
+	// значило бы дать ему разойтись.
+	Text string `json:"text"`
+}
+
+func newJournal(list []domain.Incident, titles map[string]string) journal {
+	j := journal{Incidents: newIncidents(list, titles), Blocks: newKPIBlocks()}
+
+	counted := 0
+	for _, in := range list {
+		if in.Countable() {
+			counted++
+		}
+	}
+	switch {
+	case len(list) == 0:
+		j.Text = "журнал пуст"
+	case counted == len(list):
+		j.Text = ru.Count(len(list), "случай", "случая", "случаев")
+	default:
+		j.Text = fmt.Sprintf("%s, из них %d вне зоны контроля",
+			ru.Count(len(list), "случай", "случая", "случаев"), len(list)-counted)
+	}
+	return j
+}

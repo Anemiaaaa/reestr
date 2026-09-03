@@ -169,6 +169,19 @@ type Store interface {
 	// без единой сборки — пустой список, а не ошибка.
 	SliceVersions(ctx context.Context, taskID string) ([]domain.SliceRef, error)
 
+	// AddIncident записывает случай в журнал. Задача должна существовать, иначе
+	// ErrNotFound: случай без задачи нечем проверить, а «дата, задача, что
+	// произошло» — требование самой системы оплаты.
+	//
+	// Занятый идентификатор — ErrExists. Журнал только пополняется: запись,
+	// однажды сделанная, не правится, иначе оценка перестанет объясняться тем,
+	// что было зафиксировано в момент события.
+	AddIncident(ctx context.Context, in domain.Incident) error
+
+	// Incidents возвращает журнал, свежие случаи первыми. Пустой taskID означает
+	// «по всем задачам».
+	Incidents(ctx context.Context, taskID string) ([]domain.Incident, error)
+
 	// NextSliceVersion возвращает номер, который получит следующая сборка.
 	NextSliceVersion(ctx context.Context, taskID string) (int, error)
 }

@@ -798,6 +798,7 @@ async function addTask() {
 
 async function boot() {
   $("#add-task").addEventListener("click", addTask);
+  $("#open-journal").addEventListener("click", openJournal);
   window.addEventListener("hashchange", () => {
     const id = location.hash.slice(1);
     if (id && id !== state.current) open(id);
@@ -900,4 +901,102 @@ function drawDiff(d) {
     }
   }
   return box;
+}
+
+// --- журнал инцидентов ---
+
+// openJournal показывает журнал случаев.
+//
+// Отдельный экран, а не вкладка задачи: журнал ведут по человеку и месяцу, а не
+// по задаче. Задача в записи есть, но она место, где случай произошёл, а не то,
+// вокруг чего журнал устроен.
+async function openJournal() {
+  state.current = "";
+  drawTasks();
+  location.hash = "";
+  $("#main").replaceChildren(el("div", { class: "empty", text: "Загрузка…" }));
+
+  try {
+    state.journal = await api("/api/incidents");
+    renderJournal();
+  } catch (e) {
+    $("#main").replaceChildren(el("div", { class: "empty" }, el("div", { class: "err", text: e.message })));
+  }
+}
+
+function renderJournal() {
+  const j = state.journal;
+  const page = el("div", { class: "page" },
+    el("div", { class: "crumb", text: "Оценка KPI" }),
+    el("h1", { text: "Журнал инцидентов" }),
+    el("div", { class: "crumb" },
+      "Основание для оценки: без зафиксированного случая KPI не снижается. " +
+      "Оценку в процентах ставит руководитель — реестр хранит случаи."),
+    el("div", { class: "actions" },
+      el("button", {
+        class: "btn btn--primary",
+        type: "button",
+        text: "Записать случай",
+        onclick: addIncident,
+      }),
+      el("span", { class: "actions__note", text: j.text })));
+
+  if (!j.incidents.length) {
+    page.append(el("div", { class: "empty", text: "Пока ни одного случая." }));
+    $("#main").replaceChildren(page);
+    return;
+  }
+
+  const list = el("ul", { class: "list", style: "margin-top:22px" });
+  for (const in_ of j.incidents) {
+    const top = el("div", { class: "card__top" },
+      el("span", { class: "card__title", text: in_.employee }),
+      el("span", { class: "tag", text: in_.blockLabel }),
+      el("span", { class: "card__meta", text: in_.at }));
+
+    // Текст случая — через textContent: это чужие слова о человеке, и
+    // разметкой они быть не должны ни при каких обстоятельствах.
+    const card = el("li", { class: in_.external ? "card" : "card card--warn" },
+      top,
+      el("div", { class: "card__body", text: in_.text }),
+      el("div", { class: "crumb", text: "задача: " + (in_.taskTitle || in_.taskId) }),
+      in_.note ? el("div", { class: "crumb", text: in_.note }) : null);
+    list.append(card);
+  }
+  page.append(list);
+  $("#main").replaceChildren(page);
+}
+
+async function addIncident() {
+  const j = state.journal;
+  const tasks = state.tasks.map(t => [t.id, t.title]);
+  if (!tasks.length) {
+    flash("Сначала нужна хотя бы одна задача: случай без задачи не проверить.");
+    return;
+  }
+
+  const got = await ask("Случай", [
+    { name: "employee", label: "Сотрудник", required: true, hint: "кого касается" },
+    { name: "taskId", label: "Задача", kind: "select", options: tasks },
+    { name: "at", label: "Когда случилось", kind: "date", required: true },
+    // Ровно один блок: один случай не должен съедать несколько блоков сразу.
+    { name: "block", label: "Блок KPI", kind: "select", options: j.blocks.map(b => [b.value, b.label]) },
+    { name: "text", label: "Что произошло", kind: "text", required: true, hint: "факты, а не оценка" },
+    {
+      name: "external", label: "Вне зоны контроля", kind: "select",
+      options: [["", "нет"], ["yes", "да — помешал клиент или внешний фактор"]],
+      note: "Такой случай останется в журнале как объяснение, но в оценку не пойдёт.",
+    },
+  ]);
+  if (!got) return;
+
+  try {
+    await api("/api/incidents", {
+      method: "POST",
+      body: JSON.stringify({ ...got, external: got.external === "yes" }),
+    });
+    await openJournal();
+  } catch (e) {
+    flash(e.message);
+  }
 }

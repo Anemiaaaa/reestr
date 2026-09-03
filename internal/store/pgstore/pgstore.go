@@ -748,3 +748,65 @@ func (s *Store) SliceVersions(ctx context.Context, taskID string) ([]domain.Slic
 	}
 	return out, rows.Err()
 }
+
+// --- журнал инцидентов ---
+
+const incidentCols = `id, employee, task_id, at, created_at, block, txt, external`
+
+func (s *Store) AddIncident(ctx context.Context, in domain.Incident) error {
+	// Задача проверяется отдельным запросом, чтобы её отсутствие пришло как
+	// ErrNotFound, а не как нарушение внешнего ключа.
+	if _, err := s.Task(ctx, in.TaskID); err != nil {
+		return err
+	}
+
+	const q = `INSERT INTO incidents (` + incidentCols + `)
+	           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+
+	_, err := s.pool.Exec(ctx, q, in.ID, in.Employee, in.TaskID,
+		nullTime(in.At), nullTime(in.CreatedAt), string(in.Block), in.Text, in.External)
+	if err != nil {
+		if isUnique(err) {
+			return fmt.Errorf("случай %s: %w", in.ID, store.ErrExists)
+		}
+		return fmt.Errorf("запись случая %s: %w", in.ID, err)
+	}
+	return nil
+}
+
+// Incidents возвращает журнал: свежие случаи первыми. Пустой taskID означает
+// «все задачи».
+func (s *Store) Incidents(ctx context.Context, taskID string) ([]domain.Incident, error) {
+	q := `SELECT ` + incidentCols + ` FROM incidents ORDER BY at DESC NULLS LAST, seq DESC`
+	args := []any{}
+	if taskID != "" {
+		q = `SELECT ` + incidentCols + ` FROM incidents WHERE task_id = $1
+		     ORDER BY at DESC NULLS LAST, seq DESC`
+		args = append(args, taskID)
+	}
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("чтение журнала случаев: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.Incident
+	for rows.Next() {
+		var (
+			in          domain.Incident
+			block       string
+			at, created *time.Time
+		)
+		err := rows.Scan(&in.ID, &in.Employee, &in.TaskID, &at, &created,
+			&block, &in.Text, &in.External)
+		if err != nil {
+			return nil, fmt.Errorf("чтение журнала случаев: %w", err)
+		}
+		in.Block = domain.KPIBlock(block)
+		in.At = timeOf(at)
+		in.CreatedAt = timeOf(created)
+		out = append(out, in)
+	}
+	return out, rows.Err()
+}

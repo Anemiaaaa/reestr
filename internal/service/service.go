@@ -634,3 +634,61 @@ func (s *Service) CompareVersions(ctx context.Context, taskID string, a, b int) 
 	}
 	return before, after, domain.Compare(before, after), nil
 }
+
+// AddIncident записывает случай в журнал.
+//
+// Реестр здесь ничего не оценивает и зарплату не считает. Он проверяет то, что
+// можно проверить машиной: заполнены ли дата, задача и описание, назван ли блок
+// KPI. Оценку в процентах ставит человек — она про меру, а мера машине не
+// видна.
+func (s *Service) AddIncident(ctx context.Context, in domain.Incident) (domain.Incident, error) {
+	in.Employee = strings.TrimSpace(in.Employee)
+	in.TaskID = strings.TrimSpace(in.TaskID)
+	in.Text = strings.TrimSpace(in.Text)
+
+	switch {
+	case in.Employee == "":
+		return domain.Incident{}, fmt.Errorf("не указан сотрудник: %w", ErrInvalid)
+	case in.TaskID == "":
+		// «Дата, задача, что произошло» — требование самой системы оплаты.
+		// Случай без задачи специалисту нечем показать.
+		return domain.Incident{}, fmt.Errorf("не указана задача: %w", ErrInvalid)
+	case in.Text == "":
+		return domain.Incident{}, fmt.Errorf("не описано, что произошло: %w", ErrInvalid)
+	case !in.Block.Valid():
+		// Ровно один блок из закрытого списка. Правило «не применяем двойное
+		// наказание» проверяемо только пока блок один и известен.
+		return domain.Incident{}, fmt.Errorf("не указан блок KPI: %w", ErrInvalid)
+	}
+
+	if in.ID == "" {
+		in.ID = newID("i")
+	}
+	if in.CreatedAt.IsZero() {
+		in.CreatedAt = s.now()
+	}
+	// Дата события не подставляется из даты внесения: случай могли
+	// зафиксировать через неделю, а относится он к своему дню. Незаполненная
+	// дата — пробел, который видно, а подставленная — выдуманное число.
+	if in.At.IsZero() {
+		return domain.Incident{}, fmt.Errorf("не указана дата случая: %w", ErrInvalid)
+	}
+
+	if err := s.store.AddIncident(ctx, in); err != nil {
+		return domain.Incident{}, err
+	}
+	s.log.Info("случай записан",
+		"случай", in.ID, "сотрудник", in.Employee, "задача", in.TaskID, "блок", in.Block)
+	return in, nil
+}
+
+// Incidents возвращает журнал случаев, свежие первыми. Пустой taskID — по всем
+// задачам.
+func (s *Service) Incidents(ctx context.Context, taskID string) ([]domain.Incident, error) {
+	if taskID != "" {
+		if _, err := s.store.Task(ctx, taskID); err != nil {
+			return nil, err
+		}
+	}
+	return s.store.Incidents(ctx, taskID)
+}

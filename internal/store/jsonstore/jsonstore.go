@@ -38,6 +38,7 @@ type state struct {
 	Facts     []domain.Fact       `json:"facts"`
 	Processes []domain.Process    `json:"processes"`
 	Slices    []domain.Slice      `json:"slices"`
+	Incidents []domain.Incident   `json:"incidents"`
 }
 
 // Store — хранилище реестра в JSON-файле.
@@ -568,5 +569,42 @@ func (s *Store) SliceVersions(_ context.Context, taskID string) ([]domain.SliceR
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version > out[j].Version })
+	return out, nil
+}
+
+// --- журнал инцидентов ---
+
+func (s *Store) AddIncident(ctx context.Context, in domain.Incident) error {
+	if _, err := s.Task(ctx, in.TaskID); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, existing := range s.st.Incidents {
+		if existing.ID == in.ID {
+			return fmt.Errorf("случай %s: %w", in.ID, store.ErrExists)
+		}
+	}
+	s.st.Incidents = append(s.st.Incidents, in)
+	return s.persist()
+}
+
+// Incidents возвращает журнал: свежие случаи первыми. Пустой taskID означает
+// «все задачи».
+func (s *Store) Incidents(_ context.Context, taskID string) ([]domain.Incident, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []domain.Incident
+	for _, in := range s.st.Incidents {
+		if taskID == "" || in.TaskID == taskID {
+			out = append(out, in)
+		}
+	}
+	// Устойчивая сортировка: при равных датах порядок остаётся тем, в каком
+	// случаи вносили.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
 	return out, nil
 }

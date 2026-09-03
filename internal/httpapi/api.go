@@ -52,6 +52,8 @@ func New(svc *service.Service, web fs.FS, log *slog.Logger) *Server {
 	mux.HandleFunc("POST /api/tasks/{id}/sources", s.addSource)
 	mux.HandleFunc("GET /api/tasks/{id}/processes", s.processes)
 	mux.HandleFunc("GET /api/tasks/{id}/facts", s.facts)
+	mux.HandleFunc("GET /api/incidents", s.incidents)
+	mux.HandleFunc("POST /api/incidents", s.addIncident)
 	mux.HandleFunc("GET /api/sources/{id}", s.source)
 	if web != nil {
 		mux.Handle("GET /", http.FileServerFS(web))
@@ -613,4 +615,62 @@ func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, newDiff(before, after, changes))
+}
+
+// incidentRequest — случай, как его присылает форма.
+type incidentRequest struct {
+	Employee string `json:"employee"`
+	TaskID   string `json:"taskId"`
+	At       date   `json:"at"`
+	Block    string `json:"block"`
+	Text     string `json:"text"`
+	External bool   `json:"external"`
+}
+
+// incidents отдаёт журнал случаев вместе со списком блоков KPI.
+//
+// Блоки едут в том же ответе, что и журнал: список закрытый и короткий, а
+// отдельный запрос за ним означал бы, что форму нельзя показать, пока не
+// ответили два раза.
+func (s *Server) incidents(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	list, err := s.svc.Incidents(ctx, strings.TrimSpace(r.URL.Query().Get("task")))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	tasks, err := s.svc.Tasks(ctx)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	titles := make(map[string]string, len(tasks))
+	for _, t := range tasks {
+		titles[t.ID] = t.Title
+	}
+
+	writeJSON(w, http.StatusOK, newJournal(list, titles))
+}
+
+func (s *Server) addIncident(w http.ResponseWriter, r *http.Request) {
+	var req incidentRequest
+	if err := readJSON(r, &req); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	in, err := s.svc.AddIncident(r.Context(), domain.Incident{
+		Employee: req.Employee,
+		TaskID:   req.TaskID,
+		At:       req.At.Time,
+		Block:    domain.KPIBlock(req.Block),
+		Text:     req.Text,
+		External: req.External,
+	})
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, newIncidents([]domain.Incident{in}, nil)[0])
 }
