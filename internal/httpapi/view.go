@@ -17,6 +17,7 @@ import (
 	"github.com/Anemiaaaa/reestr/internal/bitrix"
 	"github.com/Anemiaaaa/reestr/internal/domain"
 	"github.com/Anemiaaaa/reestr/internal/ru"
+	"github.com/Anemiaaaa/reestr/internal/service"
 )
 
 // mark — знак происхождения значения. Повторяет пометки из макета: читатель
@@ -613,6 +614,37 @@ func newPortalTasks(list []bitrix.Task) []portalTask {
 			v.OpenedAt = t.CreatedAt.Format(dateLayout)
 		}
 		out = append(out, v)
+	}
+	return out
+}
+
+// --- подтяжка ---
+
+// pullReport — итог подтяжки для человека.
+//
+// Готовой фразой, а не набором чисел. Собирать её в браузере значило бы
+// раскладывать «1 сообщение / 2 сообщения / 5 сообщений» по падежам второй раз,
+// а этим уже занимается пакет ru — на стороне сервера и в одном месте.
+type pullReport struct {
+	Added int    `json:"added"`
+	Text  string `json:"text"`
+}
+
+func newPullReport(res []service.PullResult) pullReport {
+	out := pullReport{}
+	for _, r := range res {
+		out.Added += r.Added
+	}
+
+	switch {
+	case len(res) == 0:
+		// Закреплённых чатов нет вовсе. Это не отказ: задача могла вестись без
+		// портала, и человеку нужно понять, почему кнопка ничего не дала.
+		out.Text = "у задачи нет закреплённого чата Bitrix24"
+	case out.Added == 0:
+		out.Text = "новых сообщений нет"
+	default:
+		out.Text = "перенесено " + ru.Count(out.Added, "сообщение", "сообщения", "сообщений")
 	}
 	return out
 }

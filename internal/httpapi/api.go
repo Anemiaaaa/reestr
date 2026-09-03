@@ -43,6 +43,7 @@ func New(svc *service.Service, web fs.FS, log *slog.Logger) *Server {
 	mux.HandleFunc("GET /api/tasks/{id}/board", s.board)
 	mux.HandleFunc("GET /api/tasks/{id}/slice", s.slice)
 	mux.HandleFunc("POST /api/tasks/{id}/slice/rebuild", s.rebuild)
+	mux.HandleFunc("POST /api/tasks/{id}/pull", s.pull)
 	mux.HandleFunc("GET /api/tasks/{id}/sources", s.taskSources)
 	mux.HandleFunc("POST /api/tasks/{id}/sources", s.addSource)
 	mux.HandleFunc("GET /api/tasks/{id}/processes", s.processes)
@@ -247,6 +248,21 @@ func (s *Server) board(w http.ResponseWriter, r *http.Request) {
 		out.Sources = append(out.Sources, newSource(src, false))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// pull переносит новые сообщения закреплённых чатов в реестр.
+//
+// Срез после этого не пересобирается. Перенос переписки и сборка среза —
+// разные события: сообщение попадает в источники, только если на него сослался
+// разбор, и решать это подтяжке нечем. Пересобрать срез человек нажмёт
+// отдельно, увидев, что нового приехало.
+func (s *Server) pull(w http.ResponseWriter, r *http.Request) {
+	res, err := s.svc.PullChats(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newPullReport(res))
 }
 
 func (s *Server) slice(w http.ResponseWriter, r *http.Request) {

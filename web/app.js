@@ -514,6 +514,17 @@ function render() {
       onclick: ev => rebuild(ev.currentTarget),
     }),
     el("button", { class: "btn", type: "button", text: "Добавить источник", onclick: addSource }),
+    // Кнопка есть только у задачи с закреплённым чатом: подтягивать неоткуда,
+    // а кнопка, которая всегда отвечает «чата нет», — обещание, которого
+    // интерфейс не сдержит.
+    b.chats.length
+      ? el("button", {
+        class: "btn",
+        type: "button",
+        text: "Подтянуть переписку",
+        onclick: ev => pull(ev.currentTarget),
+      })
+      : null,
     el("span", { class: "actions__note", text: "аналитик: " + b.slice.head.analyst + " · фактов: " + b.facts })));
 
   const panels = [
@@ -561,10 +572,10 @@ function render() {
   show(panels.some(p => p[0] === state.tab) ? state.tab : "slice");
 }
 
-function flash(text) {
+function flash(text, cls = "err") {
   const page = $("#main .page");
   if (!page) return;
-  const box = el("div", { class: "err", text });
+  const box = el("div", { class: cls, text });
   page.insertBefore(box, page.children[2] || null);
 }
 
@@ -644,6 +655,30 @@ async function rebuild(btn) {
   } catch (e) {
     btn.disabled = false;
     btn.textContent = "Пересобрать срез";
+    flash(e.message);
+  }
+}
+
+// pull переносит новые сообщения закреплённых чатов.
+//
+// Срез после этого не пересобирается, в отличие от загрузки источника. Разница
+// не в удобстве: перенесённое сообщение станет источником, только если на него
+// сослался разбор, и пересборка сразу после подтяжки чаще всего дала бы ту же
+// самую версию — то есть лишнюю запись в истории.
+async function pull(btn) {
+  btn.disabled = true;
+  btn.textContent = "Читаю чат…";
+  try {
+    const res = await api("/api/tasks/" + encodeURIComponent(state.current) + "/pull", { method: "POST" });
+    // Перерисовываем в любом случае: даже без новых сообщений изменилось время
+    // последнего похода, и человек должен видеть, что кнопка сработала.
+    // Сначала страница, потом сообщение: open заменяет содержимое целиком и
+    // стёр бы сообщение, вставленное до него.
+    await open(state.current);
+    flash(res.text, res.added ? "done" : "warn");
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = "Подтянуть переписку";
     flash(e.message);
   }
 }

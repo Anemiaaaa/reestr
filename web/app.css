@@ -480,6 +480,17 @@ h1 {
   font-size: 13px;
 }
 
+/* Сообщение о том, что всё прошло. Та же форма, что и у ошибки, но не красная:
+   «перенесено 6 сообщений» в красной рамке читается как беда. */
+.done {
+  margin: 12px 0 0;
+  padding: 8px 11px;
+  border-radius: 4px;
+  background: var(--green-bg);
+  color: #2f5c43;
+  font-size: 13px;
+}
+
 @media (max-width: 860px) {
   .app { grid-template-columns: 1fr; }
   .side { display: none; }
