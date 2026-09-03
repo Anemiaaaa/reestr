@@ -909,3 +909,66 @@ h1 {
 /* Пояснения под заголовком не тянутся во всю ширину: строка в сто знаков
    читается тяжело, глаз теряет начало следующей. */
 .page > .crumb { max-width: 68ch; }
+
+/* --- справка и проза --- */
+
+/* Паспорт задачи — справка, а не текст для чтения: имена, даты, номера. Строки
+   «подпись — значение» во всю ширину читались как форма, которую заполнили и
+   забыли. Плотная сетка ставит их в один взгляд и не притворяется прозой. */
+.spec {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(184px, 1fr));
+  gap: 14px 28px;
+}
+
+.spec__label {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  margin-bottom: 3px;
+}
+.spec__value { font-size: 14px; line-height: 1.4; }
+
+/* Цель — единственное место среза, которое читают целиком, а не глазами по
+   диагонали. Ей и набор как у текста: крупнее, свободнее, в колонке нормальной
+   для чтения ширины. */
+.lead + .lead { margin-top: 20px; }
+
+.lead__label {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  margin-bottom: 5px;
+}
+.lead__text {
+  font-size: 16.5px;
+  line-height: 1.5;
+  max-width: 60ch;
+}
+
+/* Подзаголовок внутри раздела. Раньше он собирался из .sec__head с правками
+   размера по месту и выглядел как заголовок раздела помельче — граница между
+   «раздел» и «часть раздела» терялась. */
+.sub {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 26px 0 10px;
+  letter-spacing: .01em;
+}
+
+/* Отступ сверху нужен подзаголовку только когда над ним что-то есть. Сразу под
+   шапкой раздела — например, у статуса без вех — он оставлял пустую полосу на
+   первом экране. */
+.sec__head + .sub { margin-top: 4px; }
+
+/* Критерии приёмки: выполненный отличается от невыполненного не только
+   галочкой, но и тоном — по списку видно счёт, не вчитываясь. */
+.tick { padding: 3px 0; }
+.tick__box { font-size: 14px; }
+.tick--met .tick__text { color: var(--muted); }
+.tick__text { line-height: 1.45; }

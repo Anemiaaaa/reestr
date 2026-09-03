@@ -247,18 +247,45 @@ function ticks(items) {
 }
 
 function tick(box, met, body, note) {
-  return el("li", { class: "tick" },
+  return el("li", { class: met ? "tick tick--met" : "tick" },
     el("span", { class: met ? "tick__box tick__box--met" : "tick__box", text: box }),
     el("div", {}, body, note ? el("div", { class: "tick__note", text: note }) : null));
 }
 
+// spec рисует справочную сетку «подпись — значение».
+//
+// Паспорт задачи это справка: имена, даты, номера. Строками во всю ширину она
+// читалась как форма, которую заполнили и забыли, — глаз проскакивал раздел, не
+// найдя в нём текста. Плотная сетка честно говорит «это справка» и умещается в
+// один взгляд.
+function spec(pairs) {
+  return el("div", { class: "spec" }, pairs.map(([label, v]) =>
+    el("div", {},
+      el("div", { class: "spec__label", text: label }),
+      el("div", { class: "spec__value" }, val(v)))));
+}
+
+// lead рисует то, что читают целиком: набор как у текста, а не как у поля.
+function lead(label, v) {
+  return el("div", { class: "lead" },
+    el("div", { class: "lead__label", text: label }),
+    el("div", { class: "lead__text" }, val(v)));
+}
+
+function sub(text) {
+  return el("div", { class: "sub", text });
+}
+
 function drawPassport(p) {
-  const rows = el("div", { class: "rows" },
-    field("Название", p.title),
-    field("Автор постановки", p.author),
-    field("Исполнитель", p.assignee),
-    field("Поставлена", p.openedAt),
-    field("Срок", p.deadline));
+  // Названия здесь нет намеренно: оно стоит заголовком страницы, и повторять
+  // его строкой значит начинать раздел с того, что читатель только что прочёл.
+  // Пометка происхождения названия при этом не теряется — она у заголовка.
+  const rows = spec([
+    ["Автор постановки", p.author],
+    ["Исполнитель", p.assignee],
+    ["Поставлена", p.openedAt],
+    ["Срок", p.deadline],
+  ]);
 
   if (!p.shifts.length) return sec("1", "Паспорт задачи", null, rows);
 
@@ -274,40 +301,41 @@ function drawPassport(p) {
         : null);
   }));
 
-  return sec("1", "Паспорт задачи", null, rows,
-    el("div", { class: "sec__head", style: "margin-top:18px" },
-      el("span", { class: "sec__title", style: "font-size:14px", text: "Переносы срока" })),
-    list);
+  return sec("1", "Паспорт задачи", null, rows, sub("Переносы срока"), list);
 }
 
 function drawGoal(g) {
-  const kids = [el("div", { class: "rows" },
-    field("Как поставлено", g.asStated),
-    field("Что имелось в виду", g.clarified))];
+  // Цель идёт прозой и первой: это единственное место среза, которое читают
+  // целиком. В узкой колонке рядом с подписью она выглядела полем формы —
+  // ровно тем, что глаз пропускает.
+  //
+  // «Как поставлено» и «Что имелось в виду» стоят подряд намеренно: расхождение
+  // между ними и есть главный вывод раздела, и увидеть его можно, только когда
+  // обе формулировки рядом.
+  const kids = [lead("Как поставлено", g.asStated), lead("Что имелось в виду", g.clarified)];
 
   if (g.criteria.length) {
-    kids.push(el("div", { class: "sec__head", style: "margin-top:18px" },
-      el("span", { class: "sec__title", style: "font-size:14px", text: "Критерии приёмки" })));
+    kids.push(sub("Критерии приёмки"));
     kids.push(ticks(g.criteria.map(c =>
-      tick(c.met ? "☑" : "☐", c.met, el("span", { text: c.n + ". " + c.text }), c.note))));
+      tick(c.met ? "☑" : "☐", c.met,
+        el("span", { class: "tick__text", text: c.n + ". " + c.text }), c.note))));
   }
   if (g.outOfScope.length) {
-    kids.push(el("div", { class: "sec__head", style: "margin-top:18px" },
-      el("span", { class: "sec__title", style: "font-size:14px", text: "Вне задачи" })));
+    kids.push(sub("Вне задачи"));
     kids.push(ticks(g.outOfScope.map(v => tick("—", false, val(v)))));
   }
   return sec("2", "Цель и границы", null, kids);
 }
 
 function drawStatus(st, share) {
-  const kids = [el("div", { class: "rows" },
-    field("Этап", st.stage),
-    el("div", { class: "row" },
-      el("div", { class: "row__label", text: "Готовность" }),
-      el("div", { class: "row__value" }, val(st.readiness), bar(share))))];
+  // Этапа и готовности здесь нет намеренно: обе строки слово в слово стоят в
+  // сводке наверху, вместе со своими пометками происхождения. Повтор через
+  // экран прокрутки ничего не добавлял, но занимал первый экран раздела — тот,
+  // с которого начинают читать, — справкой вместо плана работ.
+  const kids = [];
 
   if (st.milestones.length) {
-    kids.push(el("div", { class: "steps", style: "margin-top:14px" }, st.milestones.map(m =>
+    kids.push(el("div", { class: "steps" }, st.milestones.map(m =>
       el("div", { class: "step" },
         el("div", {},
           el("div", { class: "step__title", text: m.title }),
@@ -316,13 +344,11 @@ function drawStatus(st, share) {
         el("div", { class: m.done ? "step__pct step__pct--done" : "step__pct", text: m.progress })))));
   }
   if (st.done.length) {
-    kids.push(el("div", { class: "sec__head", style: "margin-top:18px" },
-      el("span", { class: "sec__title", style: "font-size:14px", text: "Сделано" })));
+    kids.push(sub("Сделано"));
     kids.push(ticks(st.done.map(v => tick("✓", true, val(v)))));
   }
   if (st.left.length) {
-    kids.push(el("div", { class: "sec__head", style: "margin-top:18px" },
-      el("span", { class: "sec__title", style: "font-size:14px", text: "Осталось" })));
+    kids.push(sub("Осталось"));
     kids.push(ticks(st.left.map(v => tick("·", false, val(v)))));
   }
   return sec("3", "Статус и план", null, kids);
@@ -345,9 +371,7 @@ function drawTrouble(sl) {
   }
 
   if (sl.risks.length) {
-    kids.push(el("div", { class: "sec__head", style: "margin-top:20px" },
-      el("span", { class: "sec__title", style: "font-size:14px", text: "Риски" }),
-      el("span", { class: "sec__note", text: sl.risks.length + " шт." })));
+    kids.push(sub("Риски"));
     kids.push(el("ul", { class: "list" }, sl.risks.map(r =>
       el("li", { class: "card" },
         el("div", { class: "card__top" },
