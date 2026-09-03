@@ -815,3 +815,46 @@ func TestClock(t *testing.T) {
 		t.Errorf("часы показывают %v, ожидалось %v", s.Now(), stamp)
 	}
 }
+
+// TestSliceWithoutSources: задачу без материала открыть можно.
+//
+// Разбирать нечего, и разбор не зовётся: вызов платный, а ответ на пустой вход
+// был бы выдумкой от первого до последнего поля. Срез при этом собирается — из
+// одних пробелов, и это верное описание положения дел. Отказ вместо среза
+// означал бы, что только что созданную задачу нельзя открыть, а это первое, что
+// человек делает после создания.
+func TestSliceWithoutSources(t *testing.T) {
+	s := newService(t)
+	s.analyst = refusingAnalyst{}
+	ctx := context.Background()
+
+	task, err := s.CreateTask(ctx, domain.Task{Title: "Только что создана"})
+	if err != nil {
+		t.Fatalf("создать задачу: %v", err)
+	}
+
+	sl, err := s.Slice(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("срез задачи без источников: %v", err)
+	}
+	if sl.Version != 1 {
+		t.Errorf("версия %d, хотели 1", sl.Version)
+	}
+	// Срез из одних пробелов — и они посчитаны: человек видит, чего не хватает.
+	if sl.Gaps() == 0 {
+		t.Error("у задачи без материала не нашлось ни одного пробела")
+	}
+	if sl.Status.Stage.Known() {
+		t.Errorf("этап заполнен без источников: %+v", sl.Status.Stage)
+	}
+}
+
+// refusingAnalyst — разбор, который на пустом входе отказывает. Так ведёт себя
+// разбор моделью: платить за вызов, в котором нечего разбирать, незачем.
+type refusingAnalyst struct{}
+
+func (refusingAnalyst) Name() string { return "отказной разбор" }
+
+func (refusingAnalyst) Extract(context.Context, analyst.Input) (analyst.Output, error) {
+	return analyst.Output{}, errors.New("нет источников для разбора")
+}

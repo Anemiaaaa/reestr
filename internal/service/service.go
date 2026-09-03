@@ -382,9 +382,21 @@ func (s *Service) Rebuild(ctx context.Context, taskID string) (domain.Slice, err
 		return domain.Slice{}, err
 	}
 
-	out, err := s.analyst.Extract(ctx, analyst.Input{Task: task, Sources: sources, Now: now})
-	if err != nil {
-		return domain.Slice{}, fmt.Errorf("разбор источников: %w", err)
+	// Задачу без материала разбирать не зовём. Разбирать нечего, вызов модели
+	// платный, а ответ на него был бы выдумкой от первого до последнего поля.
+	//
+	// Срез при этом собирается, а не отменяется: у задачи без источников он
+	// состоит из одних пробелов, и это верное описание положения дел. Отказ
+	// вместо среза означал бы, что только что созданную задачу нельзя открыть —
+	// а это первое, что человек делает после создания.
+	var out analyst.Output
+	if len(sources) > 0 {
+		out, err = s.analyst.Extract(ctx, analyst.Input{Task: task, Sources: sources, Now: now})
+		if err != nil {
+			return domain.Slice{}, fmt.Errorf("разбор источников: %w", err)
+		}
+	} else {
+		s.log.Info("разбор пропущен: у задачи нет источников", "задача", taskID)
 	}
 
 	if err := s.store.AddFacts(ctx, out.Facts); err != nil {

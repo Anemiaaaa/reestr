@@ -182,6 +182,15 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, r, err)
 			return
 		}
+
+		// Постановка задачи заводится источником сразу: это материал, который
+		// есть уже сейчас, и ждать от него отдельного нажатия незачем. Отказ
+		// здесь задачу не отменяет — она создана и закреплена, а материал
+		// можно добавить руками.
+		if _, err := s.svc.SourceFromPortalTask(ctx, t.ID, portal); err != nil {
+			s.log.Warn("постановка задачи портала не заведена источником",
+				"задача", t.ID, "ошибка", err)
+		}
 	}
 	writeJSON(w, http.StatusCreated, newTask(t, s.svc.Now()))
 }

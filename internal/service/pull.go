@@ -307,3 +307,50 @@ func (s *Service) ChatMessages(ctx context.Context, taskID string) ([]domain.Raw
 	}
 	return out, nil
 }
+
+// SourceFromPortalTask заводит источник из описания задачи портала.
+//
+// Описание — это постановка задачи словами автора: состав работ, суммы,
+// договорённости. Материал не хуже переписки, а прав на него нужно меньше:
+// хватает того же права на задачи, тогда как чат требует отдельного права на
+// сообщения. На портале, где чаты закрыты, это единственный автоматический
+// материал, который вообще можно получить.
+//
+// Пустое описание источника не даёт: пустой источник в списке — обещание
+// материала, которого нет.
+func (s *Service) SourceFromPortalTask(ctx context.Context, taskID string, portal bitrix.Task) (string, error) {
+	body := strings.TrimSpace(portal.Description)
+	if body == "" {
+		return "", nil
+	}
+
+	src := domain.Source{
+		ID:     newID("s"),
+		TaskID: taskID,
+		// Вид «ТЗ», а не «переписка»: это то, что заказчику пообещали, а не то,
+		// что обсуждали по дороге.
+		Kind:       domain.KindSpec,
+		Title:      "Постановка задачи Bitrix24 №" + portal.ID,
+		Body:       body,
+		Author:     portal.Author,
+		OccurredAt: portal.CreatedAt,
+		UploadedAt: s.now(),
+		// Адрес оригинала — сама задача портала. Он же ключ: повторное
+		// закрепление той же задачи второго такого источника не заведёт.
+		External: domain.ExternalRef{
+			System:    domain.SystemBitrix,
+			ChatID:    "task",
+			MessageID: portal.ID,
+		},
+	}
+
+	if err := s.store.AddSource(ctx, src); err != nil {
+		if errors.Is(err, store.ErrExists) {
+			return "", nil
+		}
+		return "", err
+	}
+	s.log.Info("постановка задачи портала заведена источником",
+		"задача", taskID, "задача портала", portal.ID, "знаков", len(body))
+	return src.ID, nil
+}

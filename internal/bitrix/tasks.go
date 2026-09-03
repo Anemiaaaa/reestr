@@ -42,6 +42,11 @@ type Task struct {
 	CreatedAt time.Time
 	Deadline  time.Time
 
+	// Description — постановка задачи словами автора, уже без разметки и без
+	// токенов. Материал не хуже переписки: в нём состав работ и суммы, а прав
+	// на него хватает тех же, что на список задач.
+	Description string
+
 	// Closed отмечает завершённую задачу. Такие из списка не убираются: срез
 	// собирают и по закрытой задаче, а иногда именно по ней.
 	Closed bool
@@ -124,6 +129,7 @@ type taskItem struct {
 
 	Deadline    string `json:"deadline"`
 	CreatedDate string `json:"createdDate"`
+	Description string `json:"description"`
 
 	Creator     *taskUser `json:"creator"`
 	Responsible *taskUser `json:"responsible"`
@@ -165,6 +171,13 @@ func (it taskItem) task() (Task, bool) {
 	}
 	if it.Responsible != nil {
 		t.Assignee = caption(it.Responsible.Name)
+	}
+
+	// Описание идёт через снятие разметки и замазку, но без склейки строк:
+	// caption для него не годится — это тело материала, а не подпись, и
+	// сложенное в одну строку оно потеряет и таблицу состава работ, и абзацы.
+	if body, _ := Redact(Plain(it.Description)); strings.TrimSpace(body) != "" {
+		t.Description = strings.TrimSpace(body)
 	}
 	return t, true
 }
