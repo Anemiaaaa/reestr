@@ -169,6 +169,25 @@ type Store interface {
 	// без единой сборки — пустой список, а не ошибка.
 	SliceVersions(ctx context.Context, taskID string) ([]domain.SliceRef, error)
 
+	// AddCorrection записывает правку поля среза, сделанную человеком. Задача
+	// должна существовать, иначе ErrNotFound; занятый идентификатор — ErrExists.
+	//
+	// Правки, как и факты, только добавляются: последняя по полю перекрывает
+	// предыдущие, а история остаётся. Так видно, когда и на каком основании
+	// срез разошёлся с разбором.
+	AddCorrection(ctx context.Context, c domain.Correction) error
+
+	// Corrections возвращает правки задачи от ранних к поздним — в том порядке,
+	// в каком их накладывают на срез.
+	Corrections(ctx context.Context, taskID string) ([]domain.Correction, error)
+
+	// DropCorrections снимает все правки поля и возвращает, сколько сняли.
+	// Пустой field означает «все правки задачи».
+	//
+	// Это возврат к тому, что сказал разбор: человек передумал править. Ноль —
+	// не ошибка: снимать было нечего.
+	DropCorrections(ctx context.Context, taskID, field string) (int, error)
+
 	// DeleteSlice убирает версию среза. Отсутствующая версия — ErrNotFound.
 	//
 	// Единственное изъятие в хранилище, которое иначе только пополняется, и оно

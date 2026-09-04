@@ -56,6 +56,7 @@ func New(svc *service.Service, web fs.FS, log *slog.Logger, a *auth.Auth) *Serve
 	mux.HandleFunc("GET /api/tasks/{id}/slice", s.slice)
 	mux.HandleFunc("POST /api/tasks/{id}/slice/rebuild", s.rebuild)
 	mux.HandleFunc("POST /api/tasks/{id}/slice/correct", s.correct)
+	mux.HandleFunc("DELETE /api/tasks/{id}/slice/corrections", s.dropCorrections)
 	mux.HandleFunc("DELETE /api/tasks/{id}/slices/{version}", s.deleteVersion)
 	mux.HandleFunc("POST /api/tasks/{id}/pull", s.pull)
 	mux.HandleFunc("GET /api/tasks/{id}/slices", s.versions)
@@ -282,10 +283,16 @@ func (s *Server) board(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	edited, err := s.svc.EditedFields(ctx, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
 	srcs := newSources(list)
 	out := board{
 		Task:     newTask(t, now),
-		Slice:    newSlice(sl, t, list, now),
+		Slice:    newSlice(sl, t, list, now, edited),
 		Diagrams: newDiagrams(procs, srcs),
 		Sources:  make([]source, 0, len(list)),
 		Chats:    newLinks(links),
@@ -380,7 +387,12 @@ func (s *Server) writeSlice(
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, code, newSlice(sl, t, list, s.svc.Now()))
+	edited, err := s.svc.EditedFields(ctx, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, code, newSlice(sl, t, list, s.svc.Now(), edited))
 }
 
 func (s *Server) taskSources(w http.ResponseWriter, r *http.Request) {
@@ -628,7 +640,12 @@ func (s *Server) version(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newSlice(sl, t, list, s.svc.Now()))
+	edited, err := s.svc.EditedFields(ctx, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newSlice(sl, t, list, s.svc.Now(), edited))
 }
 
 // correctRequest — правка одного поля среза.
@@ -637,12 +654,12 @@ func (s *Server) version(w http.ResponseWriter, r *http.Request) {
 // сервер из пропуска. Правка в срезе — это утверждение о задаче наравне с
 // цитатой из переписки, и чьё оно, выдумывать нельзя.
 type correctRequest struct {
-	Field string `json:"field"`
-	Text  string `json:"text"`
+	Field string      `json:"field"`
+	Edit  domain.Edit `json:"edit"`
 }
 
-// correct записывает значение, названное человеком, и собирает с ним новую
-// версию среза.
+// correct записывает содержимое поля, названное человеком, и собирает с ним
+// новую версию среза.
 func (s *Server) correct(w http.ResponseWriter, r *http.Request) {
 	var req correctRequest
 	if err := readJSON(r, &req); err != nil {
@@ -650,23 +667,24 @@ func (s *Server) correct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, id := r.Context(), r.PathValue("id")
-	sl, err := s.svc.Correct(ctx, id, req.Field, req.Text, s.viewer(r))
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	t, err := s.svc.Task(ctx, id)
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	list, err := s.svc.Sources(ctx, id)
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, newSlice(sl, t, list, s.svc.Now()))
+	author := s.viewer(r)
+	s.writeSlice(w, r, http.StatusOK, func(ctx context.Context, id string) (domain.Slice, error) {
+		return s.svc.Correct(ctx, id, req.Field, req.Edit, author)
+	})
+}
+
+// dropCorrections снимает правки поля и возвращает срез без них.
+//
+// Поле приходит запросом, а не путём: пустое означает «все правки задачи», а
+// пустой отрезок пути читался бы как опечатка в адресе.
+func (s *Server) dropCorrections(w http.ResponseWriter, r *http.Request) {
+	field := strings.TrimSpace(r.URL.Query().Get("field"))
+	author := s.viewer(r)
+
+	s.writeSlice(w, r, http.StatusOK, func(ctx context.Context, id string) (domain.Slice, error) {
+		sl, _, err := s.svc.DropCorrections(ctx, id, field, author)
+		return sl, err
+	})
 }
 
 // deleteVersion убирает версию среза.

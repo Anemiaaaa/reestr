@@ -38,7 +38,8 @@ type state struct {
 	Facts     []domain.Fact       `json:"facts"`
 	Processes []domain.Process    `json:"processes"`
 	Slices    []domain.Slice      `json:"slices"`
-	Incidents []domain.Incident   `json:"incidents"`
+	Incidents   []domain.Incident   `json:"incidents"`
+	Corrections []domain.Correction `json:"corrections"`
 }
 
 // Store — хранилище реестра в JSON-файле.
@@ -586,6 +587,61 @@ func (s *Store) DeleteSlice(_ context.Context, taskID string, version int) error
 		}
 	}
 	return fmt.Errorf("срез %s версии %d: %w", taskID, version, store.ErrNotFound)
+}
+
+// --- правки среза ---
+
+func (s *Store) AddCorrection(ctx context.Context, c domain.Correction) error {
+	if _, err := s.Task(ctx, c.TaskID); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, existing := range s.st.Corrections {
+		if existing.ID == c.ID {
+			return fmt.Errorf("правка %s: %w", c.ID, store.ErrExists)
+		}
+	}
+	s.st.Corrections = append(s.st.Corrections, c)
+	return s.persist()
+}
+
+func (s *Store) Corrections(_ context.Context, taskID string) ([]domain.Correction, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []domain.Correction
+	for _, c := range s.st.Corrections {
+		if c.TaskID == taskID {
+			out = append(out, c)
+		}
+	}
+	// Порядок записи и есть порядок наложения: поздняя правка перекрывает
+	// раннюю, и сортировать по дате нельзя — две правки одной секунды поменялись
+	// бы местами.
+	return out, nil
+}
+
+func (s *Store) DropCorrections(_ context.Context, taskID, field string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	kept := make([]domain.Correction, 0, len(s.st.Corrections))
+	dropped := 0
+	for _, c := range s.st.Corrections {
+		if c.TaskID == taskID && (field == "" || c.Field == field) {
+			dropped++
+			continue
+		}
+		kept = append(kept, c)
+	}
+	if dropped == 0 {
+		return 0, nil
+	}
+	s.st.Corrections = kept
+	return dropped, s.persist()
 }
 
 // --- журнал инцидентов ---

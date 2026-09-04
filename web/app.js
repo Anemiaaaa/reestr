@@ -137,25 +137,299 @@ function fix(v) {
 // разговора с заказчиком, и «в прошлый раз тут стояло другое» должно оставаться
 // проверяемым.
 async function correct(v) {
-  const got = await ask("Поправить срез", [
+  const edited = v.origin === "stated";
+  const got = await ask("Поправить: " + v.fieldLabel, [
     {
       name: "text", label: v.fieldLabel, kind: "text", required: true,
       value: v.known ? v.text : "",
       note: "Значение встанет в срез как сказанное вами и пересборкой не затрётся. " +
         "Появится новая версия — прежняя останется в истории.",
     },
-  ]);
+  ], edited ? { value: "revert", text: "Вернуть как было" } : null);
   if (!got) return;
 
+  if (got.action === "revert") {
+    await dropCorrections(v.field);
+    return;
+  }
+  await sendCorrection(v.field, { text: got.text });
+}
+
+// sendCorrection отправляет правку и перечитывает задачу.
+async function sendCorrection(field, edit) {
   try {
     await api("/api/tasks/" + encodeURIComponent(state.current) + "/slice/correct", {
       method: "POST",
-      body: JSON.stringify({ field: v.field, text: got.text }),
+      body: JSON.stringify({ field, edit }),
     });
     await open(state.current);
   } catch (e) {
     flash(e.message);
   }
+}
+
+// dropCorrections снимает правки поля — или все правки задачи, если поле пустое.
+//
+// Это возврат к тому, что сказал разбор. Модель при этом не зовётся: её выводы
+// уже лежат в журнале фактов, и платить за них второй раз незачем.
+async function dropCorrections(field) {
+  const what = field
+    ? "Вернуть поле к тому, что сказал разбор?"
+    : "Снять все правки этой задачи?";
+  if (!window.confirm(what + "\n\nПоявится новая версия среза; прежняя останется в истории.")) return;
+
+  const q = field ? "?field=" + encodeURIComponent(field) : "";
+  try {
+    await api("/api/tasks/" + encodeURIComponent(state.current) + "/slice/corrections" + q, {
+      method: "DELETE",
+    });
+    await open(state.current);
+  } catch (e) {
+    flash(e.message);
+  }
+}
+
+// --- правка списков ---
+
+// Из чего состоит строка каждого правимого списка.
+//
+// Таблица, а не форма на каждый вид: списков десять, и десять почти одинаковых
+// форм разошлись бы между собой в первый же месяц. Поля названы так же, как их
+// ждёт сервер, — переименование по дороге было бы лишним местом для ошибки.
+const EDIT_ROWS = {
+  valueList: [{ name: "text", label: "Пункт", kind: "text" }],
+  criteria: [
+    { name: "met", label: "Выполнен", kind: "check" },
+    { name: "text", label: "Критерий", kind: "text" },
+    { name: "note", label: "Пояснение", kind: "line" },
+  ],
+  milestones: [
+    { name: "text", label: "Этап", kind: "line" },
+    { name: "progress", label: "Готовность, %", kind: "percent" },
+    { name: "due", label: "Срок", kind: "date" },
+  ],
+  blockers: [
+    { name: "summary", label: "Что стоит", kind: "line" },
+    { name: "kind", label: "Вид", kind: "select", from: "blockers" },
+    { name: "dependsOn", label: "Ждём кого", kind: "line" },
+    { name: "since", label: "Стоит с", kind: "date" },
+    { name: "note", label: "Основание", kind: "text" },
+  ],
+  risks: [
+    { name: "summary", label: "Риск", kind: "line" },
+    { name: "days", label: "Срок +дней", kind: "number" },
+    { name: "spread", label: "На что влияет", kind: "line" },
+    { name: "note", label: "Основание", kind: "text" },
+  ],
+  questions: [
+    { name: "text", label: "Вопрос", kind: "text" },
+    { name: "unlocks", label: "Что даст ответ", kind: "line" },
+    { name: "answer", label: "Ответ", kind: "line" },
+  ],
+  actions: [
+    { name: "kind", label: "Что сделать", kind: "select", from: "actions" },
+    { name: "text", label: "Действие", kind: "line" },
+    { name: "why", label: "Что разблокирует", kind: "line" },
+  ],
+  artifacts: [
+    { name: "text", label: "Файл", kind: "line" },
+    { name: "present", label: "Приложен", kind: "check" },
+    { name: "why", label: "Что дал бы", kind: "line" },
+  ],
+  shifts: [
+    { name: "at", label: "Когда двинули", kind: "date" },
+    { name: "from", label: "С даты", kind: "date" },
+    { name: "to", label: "На дату", kind: "date" },
+    { name: "note", label: "Объяснение", kind: "line" },
+  ],
+};
+
+// rowsOf вынимает текущее содержимое списка в том виде, в каком его правят.
+//
+// Берётся из уже нарисованного среза, а не из отдельного запроса: на экране
+// лежит ровно то, что человек правит, и второй источник значил бы, что форма
+// однажды откроется не с тем, что видно.
+function rowsOf(field, sl) {
+  switch (field) {
+    case "goal.outOfScope": return sl.goal.outOfScope.map(v => ({ text: v.text }));
+    case "status.done": return sl.status.done.map(v => ({ text: v.text }));
+    case "status.left": return sl.status.left.map(v => ({ text: v.text }));
+    case "goal.criteria":
+      return sl.goal.criteria.map(c => ({ text: c.text, met: c.met, note: c.note || "" }));
+    case "status.milestones":
+      return sl.status.milestones.map(m => ({
+        text: m.title, progress: Math.round(m.share * 100), due: m.due || "",
+      }));
+    case "blockers":
+      return sl.blockers.map(b => ({
+        summary: b.summary, kind: b.kind, dependsOn: b.dependsOn || "",
+        since: b.since || "", note: b.evidence.known ? b.evidence.text : "",
+      }));
+    case "risks":
+      return sl.risks.map(r => ({
+        summary: r.summary, days: r.days || 0, spread: r.spread || "",
+        note: r.evidence.known ? r.evidence.text : "",
+      }));
+    case "questions":
+      return sl.questions.map(q => ({
+        text: q.text, unlocks: q.unlocks || "", answer: q.answered ? q.answer.text : "",
+      }));
+    case "pmActions.needed":
+      return sl.pmActions.needed.map(a => ({ kind: a.kind, text: a.text, why: a.why || "" }));
+    case "artifacts":
+      return sl.artifacts.map(a => ({ text: a.name, present: a.present, why: a.wouldGive || "" }));
+    case "passport.shifts":
+      return sl.passport.shifts.map(s => ({
+        at: s.at || "", from: s.from || "", to: s.to || "", note: s.comment || "",
+      }));
+  }
+  return [];
+}
+
+// editList правит список целиком.
+//
+// Целиком, а не по пунктам, потому что адреса «третий пункт» не существует:
+// после пересборки третьим станет другой пункт, и правка молча уехала бы на
+// чужую строку. Человек называет список — реестр кладёт его поверх разбора.
+async function editList(field) {
+  const sl = state.board.slice;
+  const f = sl.edit.find(e => e.field === field);
+  if (!f) return;
+
+  const spec = EDIT_ROWS[f.kind];
+  const edited = sl.editedFields.includes(field);
+  const got = await askRows(f.label, spec, rowsOf(field, sl), sl.kinds,
+    edited ? { value: "revert", text: "Вернуть как было" } : null);
+  if (!got) return;
+
+  if (got.action === "revert") {
+    await dropCorrections(field);
+    return;
+  }
+  await sendCorrection(field, { items: got.items });
+}
+
+// askRows показывает редактор списка: строки, у каждой свои поля, плюс
+// добавление и удаление.
+//
+// Пустой список — законный ответ. «Блокеров больше нет» это утверждение, а не
+// пропуск, и запретить его значило бы оставить снятый блокер в срезе навсегда.
+function askRows(title, spec, rows, kinds, extra) {
+  const dlg = $("#modal");
+  const body = $("#modal-body");
+  $("#modal-title").textContent = "Поправить: " + title;
+  body.replaceChildren();
+
+  const list = el("div", { class: "rowset" });
+  const values = [];
+
+  const addRow = data => {
+    const inputs = {};
+    const box = el("div", { class: "rowset__row" });
+
+    for (const f of spec) {
+      let input;
+      if (f.kind === "check") {
+        input = el("input", { type: "checkbox" });
+        input.checked = !!data[f.name];
+      } else if (f.kind === "select") {
+        input = el("select", {}, kinds[f.from].map(o =>
+          el("option", { value: o.value, text: o.label })));
+        input.value = data[f.name] || kinds[f.from][0].value;
+      } else if (f.kind === "text") {
+        input = el("textarea", { rows: 2 });
+        input.value = data[f.name] || "";
+      } else {
+        const type = f.kind === "date" ? "text" : (f.kind === "number" || f.kind === "percent" ? "number" : "text");
+        input = el("input", {
+          type,
+          // Дата вводится как в срезе — 04.09.2026. Родное поле даты браузера
+          // показывает её в другом порядке, и человек, сверяясь с экраном,
+          // печатал бы одно, а видел другое.
+          placeholder: f.kind === "date" ? "дд.мм.гггг" : "",
+        });
+        input.value = data[f.name] === undefined ? "" : String(data[f.name]);
+      }
+
+      inputs[f.name] = input;
+      box.append(el("label", { class: "rowset__field rowset__field--" + f.kind },
+        el("span", { class: "rowset__label", text: f.label }), input));
+    }
+
+    const entry = { inputs, box };
+    values.push(entry);
+    box.append(el("button", {
+      class: "rowset__drop", type: "button", title: "Убрать строку", text: "✕",
+      onclick: () => {
+        entry.dropped = true;
+        box.remove();
+      },
+    }));
+    list.append(box);
+  };
+
+  for (const r of rows) addRow(r);
+
+  body.append(list, el("button", {
+    class: "btn", type: "button", text: "+ добавить",
+    onclick: () => addRow({}),
+  }));
+
+  return openModal(dlg, extra, () => ({
+    items: values.filter(v => !v.dropped).map(v => {
+      const out = {};
+      for (const f of spec) {
+        const input = v.inputs[f.name];
+        if (f.kind === "check") out[f.name] = input.checked;
+        else if (f.kind === "percent") out[f.name] = (Number(input.value) || 0) / 100;
+        else if (f.kind === "number") out[f.name] = Number(input.value) || 0;
+        else out[f.name] = input.value.trim();
+      }
+      return out;
+    }),
+  }));
+}
+
+// openModal показывает диалог и разрешается собранными значениями.
+//
+// Общая часть двух форм — одиночной и списочной. Третья кнопка появляется
+// только там, где ей есть что делать: «вернуть как было» у неправленого поля
+// предлагало бы отменить то, чего не было.
+function openModal(dlg, extra, collect) {
+  const foot = dlg.querySelector(".modal__foot");
+  const old = foot.querySelector(".modal__extra");
+  if (old) old.remove();
+  if (extra) {
+    foot.prepend(el("button", {
+      class: "btn btn--danger modal__extra", value: extra.value, text: extra.text,
+      formnovalidate: true,
+    }));
+  }
+
+  dlg.returnValue = "";
+  dlg.showModal();
+
+  return new Promise(resolve => {
+    dlg.addEventListener("close", function done() {
+      dlg.removeEventListener("close", done);
+      const action = dlg.returnValue;
+      if (action !== "ok" && (!extra || action !== extra.value)) {
+        resolve(null);
+        return;
+      }
+      resolve({ ...collect(), action });
+    });
+  });
+}
+
+// listFix — кнопка правки рядом с подзаголовком списка.
+function listFix(sl, field) {
+  if (!sl.edit.some(e => e.field === field)) return null;
+  return el("button", {
+    class: "fix fix--list", type: "button", title: "Поправить список",
+    text: sl.editedFields.includes(field) ? "✎ поправлено" : "✎",
+    onclick: () => editList(field),
+  });
 }
 
 function field(label, v) {
@@ -325,13 +599,32 @@ function lead(label, v) {
 // sub — подзаголовок части раздела. Счёт стоит рядом с ним, а не под списком:
 // десять одинаковых строк не говорят, сколько их и сколько закрыто, пока не
 // пересчитаешь глазами.
-function sub(text, note) {
+function sub(text, note, fix) {
   return el("div", { class: "sub" },
     el("span", { text }),
-    note ? el("span", { class: "sub__note", text: note }) : null);
+    note ? el("span", { class: "sub__note", text: note }) : null,
+    fix);
+}
+// --- разделы среза ---
+
+// block рисует часть раздела: подзаголовок со счётом и кнопкой правки, а под
+// ним сам список.
+//
+// Пустой список тоже показывается, если поле правимое. Иначе в него нечем
+// добавить первую строку: раздела без содержимого на экране просто нет, и
+// нажать в нём не на что.
+function block(sl, field, title, note, draw) {
+  const rows = rowsOf(field, sl);
+  const editable = sl.edit.some(e => e.field === field);
+  if (!rows.length && !editable) return [];
+
+  const out = [sub(title, rows.length ? note : "пусто", listFix(sl, field))];
+  if (rows.length) out.push(draw());
+  return out;
 }
 
-function drawPassport(p) {
+function drawPassport(sl) {
+  const p = sl.passport;
   // Названия здесь нет намеренно: оно стоит заголовком страницы, и повторять
   // его строкой значит начинать раздел с того, что читатель только что прочёл.
   // Пометка происхождения названия при этом не теряется — она у заголовка.
@@ -342,24 +635,24 @@ function drawPassport(p) {
     ["Срок", p.deadline],
   ]);
 
-  if (!p.shifts.length) return sec("1", "Паспорт задачи", null, rows);
+  const shifts = block(sl, "passport.shifts", "Переносы срока", p.shifts.length, () =>
+    el("ul", { class: "list" }, p.shifts.map(s => {
+      const moved = [s.from, s.to].filter(Boolean).join(" → ") || "перенос";
+      return el("li", { class: s.explained ? "card" : "card card--warn" },
+        el("div", { class: "card__top" },
+          el("span", { class: "card__title", text: moved }),
+          el("span", { class: s.explained ? "tag" : "tag tag--amber", text: s.explained ? "объяснён" : "без объяснения" }),
+          s.at ? el("span", { class: "card__meta", text: s.at }) : null),
+        s.movedText || s.comment
+          ? el("div", { class: "card__body", text: [s.movedText, s.comment].filter(Boolean).join(" — ") })
+          : null);
+    })));
 
-  const list = el("ul", { class: "list" }, p.shifts.map(s => {
-    const moved = [s.from, s.to].filter(Boolean).join(" → ") || "перенос";
-    return el("li", { class: s.explained ? "card" : "card card--warn" },
-      el("div", { class: "card__top" },
-        el("span", { class: "card__title", text: moved }),
-        el("span", { class: s.explained ? "tag" : "tag tag--amber", text: s.explained ? "объяснён" : "без объяснения" }),
-        s.at ? el("span", { class: "card__meta", text: s.at }) : null),
-      s.movedText || s.comment
-        ? el("div", { class: "card__body", text: [s.movedText, s.comment].filter(Boolean).join(" — ") })
-        : null);
-  }));
-
-  return sec("1", "Паспорт задачи", null, rows, sub("Переносы срока", p.shifts.length), list);
+  return sec("1", "Паспорт задачи", null, rows, shifts);
 }
 
-function drawGoal(g) {
+function drawGoal(sl) {
+  const g = sl.goal;
   // Цель идёт прозой и первой: это единственное место среза, которое читают
   // целиком. В узкой колонке рядом с подписью она выглядела полем формы —
   // ровно тем, что глаз пропускает.
@@ -371,127 +664,126 @@ function drawGoal(g) {
 
   // Счёт стоит у заголовка списка, а не под ним: семь одинаковых квадратиков
   // подряд не говорят, сколько из них закрыто, пока их не пересчитаешь глазами.
-  // Само число приходит из шапки среза уже склонённым.
-  if (g.criteria.length) {
-    kids.push(sub("Критерии приёмки", g.criteriaText));
-    kids.push(ticks(g.criteria.map(c =>
+  kids.push(block(sl, "goal.criteria", "Критерии приёмки", g.criteriaText, () =>
+    ticks(g.criteria.map(c =>
       tick(c.met ? "☑" : "☐", c.met,
-        el("span", { class: "tick__text", text: c.text }), c.note, c.n))));
-  }
-  if (g.outOfScope.length) {
-    kids.push(sub("Вне задачи", g.outOfScope.length));
-    kids.push(ticks(g.outOfScope.map(v => tick("—", false, val(v)))));
-  }
+        el("span", { class: "tick__text", text: c.text }), c.note, c.n)))));
+
+  kids.push(block(sl, "goal.outOfScope", "Вне задачи", g.outOfScope.length, () =>
+    ticks(g.outOfScope.map(v => tick("—", false, val(v))))));
+
   return sec("2", "Цель и границы", null, kids);
 }
 
-function drawStatus(st, share) {
-  // Этапа и готовности здесь нет намеренно: обе строки слово в слово стоят в
-  // сводке наверху, вместе со своими пометками происхождения. Повтор через
-  // экран прокрутки ничего не добавлял, но занимал первый экран раздела — тот,
-  // с которого начинают читать, — справкой вместо плана работ.
+function drawStatus(sl) {
+  const st = sl.status;
+  // Этапа и готовности здесь нет намеренно: обе строки стоят в правой колонке,
+  // на виду всё время чтения. Повтор занимал первый экран раздела — тот, с
+  // которого начинают читать, — справкой вместо плана работ.
   const kids = [];
 
-  if (st.milestones.length) {
-    kids.push(el("div", { class: "steps" }, st.milestones.map(m =>
+  kids.push(block(sl, "status.milestones", "Этапы плана", st.milestones.length, () =>
+    el("div", { class: "steps" }, st.milestones.map(m =>
       el("div", { class: "step" },
         el("div", {},
           el("div", { class: "step__title", text: m.title }),
           bar(m.share, true)),
         el("div", { class: m.overdueText ? "step__due step__due--late" : "step__due", text: m.overdueText || m.due || "" }),
-        el("div", { class: m.done ? "step__pct step__pct--done" : "step__pct", text: m.progress })))));
-  }
-  if (st.done.length) {
-    kids.push(sub("Сделано", st.done.length));
-    kids.push(ticks(st.done.map(v => tick("✓", true, val(v)))));
-  }
-  if (st.left.length) {
-    kids.push(sub("Осталось", st.left.length));
-    kids.push(ticks(st.left.map(v => tick("·", false, val(v)))));
-  }
+        el("div", { class: m.done ? "step__pct step__pct--done" : "step__pct", text: m.progress }))))));
+
+  kids.push(block(sl, "status.done", "Сделано", st.done.length, () =>
+    ticks(st.done.map(v => tick("✓", true, val(v))))));
+
+  kids.push(block(sl, "status.left", "Осталось", st.left.length, () =>
+    ticks(st.left.map(v => tick("·", false, val(v))))));
+
   return sec("3", "Статус и план", null, kids);
 }
 
 function drawTrouble(sl) {
   const kids = [];
 
-  if (sl.blockers.length) {
-    kids.push(el("ul", { class: "list" }, sl.blockers.map(b =>
+  kids.push(block(sl, "blockers", "Блокеры", sl.blockers.length, () =>
+    el("ul", { class: "list" }, sl.blockers.map(b =>
       el("li", { class: "card card--warn" },
         el("div", { class: "card__top" },
           el("span", { class: "card__title", text: b.summary }),
           el("span", { class: "tag tag--red", text: b.kindLabel }),
           b.ageText ? el("span", { class: "card__meta", text: b.ageText }) : null),
         b.dependsOn ? el("div", { class: "card__body", text: "ждёт: " + b.dependsOn }) : null,
-        el("div", { class: "card__body" }, val(b.evidence))))));
-  } else {
-    kids.push(el("div", { class: "row__label", text: "Блокеров не зафиксировано." }));
-  }
+        el("div", { class: "card__body" }, val(b.evidence)))))));
 
-  if (sl.risks.length) {
-    kids.push(sub("Риски", sl.risks.length));
-    kids.push(el("ul", { class: "list" }, sl.risks.map(r =>
+  kids.push(block(sl, "risks", "Риски", sl.risks.length, () =>
+    el("ul", { class: "list" }, sl.risks.map(r =>
       el("li", { class: "card" },
         el("div", { class: "card__top" },
           el("span", { class: "card__title", text: r.summary }),
           r.impactText ? el("span", { class: "tag tag--amber", text: r.impactText }) : null,
           r.spread ? el("span", { class: "card__meta", text: r.spread }) : null),
-        el("div", { class: "card__body" }, val(r.evidence))))));
-  }
+        el("div", { class: "card__body" }, val(r.evidence)))))));
+
   return sec("4", "Блокеры и риски", null, kids);
 }
 
-function drawActions(pm) {
+function drawActions(sl) {
+  const pm = sl.pmActions;
   const kids = [];
 
-  if (pm.needed.length) {
-    kids.push(el("ul", { class: "list" }, pm.needed.map(a =>
+  kids.push(block(sl, "pmActions.needed", "Действия", pm.needed.length, () =>
+    el("ul", { class: "list" }, pm.needed.map(a =>
       el("li", { class: "card" },
         el("div", { class: "card__top" },
           el("span", { class: "tag tag--blue", text: a.kindLabel }),
           el("span", { class: "card__title", text: a.text })),
-        a.why ? el("div", { class: "card__body", text: a.why }) : null))));
-  }
-  kids.push(el("div", { class: "rows", style: "margin-top:12px" },
-    field("Следующая проверка", pm.nextCheck)));
+        a.why ? el("div", { class: "card__body", text: a.why }) : null)))));
+
+  kids.push(sub("Следующая проверка"));
+  kids.push(el("div", { class: "lead__text" }, val(pm.nextCheck)));
+
   if (pm.comment) {
     kids.push(el("div", { class: "quote", style: "margin-top:10px" }, el("span", { text: pm.comment })));
   }
   return sec("5", "Что делать PM", null, kids);
 }
 
-function drawQuestions(list) {
+function drawQuestions(sl) {
+  const list = sl.questions;
   const open = list.filter(q => !q.answered).length;
-  return sec("6", "Вопросы специалисту", open ? "без ответа: " + open : "все закрыты",
-    ticks(list.map(q => {
-      const body = el("div", {}, el("span", { text: q.n + ". " + q.text }));
-      if (q.answered) body.append(val(q.answer));
-      return tick(q.answered ? "☑" : "☐", q.answered, body, q.unlocks ? "разблокирует: " + q.unlocks : null);
-    })));
+  return sec("6", "Вопросы специалисту",
+    list.length ? (open ? "без ответа: " + open : "все закрыты") : null,
+    block(sl, "questions", "Вопросы", list.length, () =>
+      ticks(list.map(q => {
+        const body = el("div", {}, el("span", { class: "tick__text", text: q.text }));
+        if (q.answered) body.append(val(q.answer));
+        return tick(q.answered ? "☑" : "☐", q.answered, body,
+          q.unlocks ? "разблокирует: " + q.unlocks : null, q.n);
+      }))));
 }
 
-function drawArtifacts(list) {
-  if (!list.length) return null;
-  const have = list.filter(a => a.present).length;
-  return sec(null, "Артефакты", have + " из " + list.length + " на руках",
-    ticks(list.map(a => tick(a.present ? "☑" : "☐", a.present,
-      el("span", { text: a.name + (a.sizeText ? " · " + a.sizeText : "") }),
-      a.present ? null : a.wouldGive))));
+function drawArtifacts(sl) {
+  const list = sl.artifacts;
+  return sec(null, "Артефакты",
+    list.length ? list.filter(a => a.present).length + " из " + list.length + " на руках" : null,
+    block(sl, "artifacts", "Файлы", list.length, () =>
+      ticks(list.map(a => tick(a.present ? "☑" : "☐", a.present,
+        el("span", { class: "tick__text", text: a.name + (a.sizeText ? " · " + a.sizeText : "") }),
+        a.present ? null : a.wouldGive)))));
 }
 
 function drawSlice(sl) {
   // Сводки разделов приходят из шапки среза: там они уже посчитаны и склонены.
   // Считать их второй раз здесь значило бы дать двум числам разойтись — ровно
   // тому, ради чего весь слой представления и заведён на сервере.
-  return el("div", {},
-    drawPassport(sl.passport),
-    drawGoal(sl.goal),
-    drawStatus(sl.status, sl.head.readinessShare),
+  return el("div", { class: "slice" },
+    drawPassport(sl),
+    drawGoal(sl),
+    drawStatus(sl),
     drawTrouble(sl),
-    drawActions(sl.pmActions),
-    drawQuestions(sl.questions),
-    drawArtifacts(sl.artifacts));
+    drawActions(sl),
+    drawQuestions(sl),
+    drawArtifacts(sl));
 }
+
 
 // --- схемы процессов ---
 
@@ -614,40 +906,20 @@ async function drawFacts(id) {
 
 // --- страница ---
 
+// render раскладывает страницу задачи в две колонки: чтение слева, состояние и
+// действия справа.
+//
+// Раньше всё шло одной лентой: сводка сверху, под ней ряд кнопок, под ним срез.
+// У длинной задачи это значило, что через полтора экрана прокрутки на виду не
+// остаётся ни готовности, ни срока, ни блокеров — а срез читают именно ради них
+// и сверяются с ними по ходу. Кнопки уезжали туда же, и «удалить версию» никто
+// не находил.
+//
+// Правая колонка прибита к верху окна и не уезжает. В ней всё, что отвечает на
+// вопрос «где мы сейчас» и «что с этим делать»; слева остаётся только то, что
+// читают подряд.
 function render() {
   const b = state.board;
-  const page = el("div", { class: "page" },
-    el("div", { class: "crumb", text: b.task.project }),
-    el("h1", { text: b.slice.head.title }),
-    drawHead(b.slice.head),
-    drawChats(b.chats),
-    drawWarns(b.slice.head));
-
-  page.append(el("div", { class: "actions" },
-    el("button", {
-      class: "btn btn--primary",
-      type: "button",
-      text: "Пересобрать срез",
-      onclick: ev => rebuild(ev.currentTarget),
-    }),
-    el("button", { class: "btn", type: "button", text: "Добавить источник", onclick: addSource }),
-    // Кнопка есть только у задачи с закреплённым чатом: подтягивать неоткуда,
-    // а кнопка, которая всегда отвечает «чата нет», — обещание, которого
-    // интерфейс не сдержит.
-    b.chats.length
-      ? el("button", {
-        class: "btn",
-        type: "button",
-        text: "Подтянуть переписку",
-        onclick: ev => pull(ev.currentTarget),
-      })
-      : null,
-  ));
-
-  // Сведения о сборке — не действие, и в ряду кнопок читались как подпись к
-  // ним. Место им под заголовком, рядом с остальным, что описывает срез.
-  page.append(el("div", { class: "byline" },
-    "собрал: " + b.slice.head.analyst + " · фактов в журнале: " + b.facts));
 
   const panels = [
     ["slice", "Срез", null, () => drawSlice(b.slice)],
@@ -657,8 +929,88 @@ function render() {
     ["facts", "Факты", b.facts, () => drawFacts(b.task.id)],
   ];
 
-  page.append(...tabbed(panels, "slice", "tab"));
+  const main = el("div", { class: "col" },
+    el("div", { class: "crumb", text: b.task.project }),
+    el("h1", { text: b.slice.head.title }),
+    drawChats(b.chats),
+    ...tabbed(panels, "slice", "tab"));
+
+  const page = el("div", { class: "page page--split" }, main, drawRail(b));
   $("#main").replaceChildren(page);
+}
+
+// drawRail собирает правую колонку: состояние задачи и действия над ней.
+function drawRail(b) {
+  const h = b.slice.head;
+  const rail = el("aside", { class: "rail" });
+
+  rail.append(el("div", { class: "rail__box" },
+    el("div", { class: "rail__label", text: "Готовность" }),
+    el("div", { class: "rail__big" }, val(h.readiness)),
+    bar(h.readinessShare),
+    el("div", { class: "rail__row" },
+      el("span", { text: "Этап" }),
+      el("span", { class: "rail__v" }, val(h.stage))),
+    h.deadline
+      ? el("div", { class: h.overdue ? "rail__row rail__row--warn" : "rail__row" },
+        el("span", { text: "Срок" }),
+        el("span", { class: "rail__v" }, h.deadline,
+          h.deadlineNote ? el("div", { class: "crumb", text: h.deadlineNote }) : null))
+      : null,
+    h.budget
+      ? el("div", { class: "rail__row" },
+        el("span", { text: "Бюджет" }), el("span", { class: "rail__v", text: h.budget }))
+      : null));
+
+  const warns = drawWarns(h);
+  if (warns) rail.append(el("div", { class: "rail__box" }, warns));
+
+  rail.append(el("div", { class: "rail__box" },
+    el("button", {
+      class: "btn btn--primary btn--wide",
+      type: "button",
+      text: "Пересобрать срез",
+      onclick: ev => rebuild(ev.currentTarget),
+    }),
+    el("button", { class: "btn btn--wide", type: "button", text: "Добавить источник", onclick: addSource }),
+    // Кнопка есть только у задачи с закреплённым чатом: подтягивать неоткуда,
+    // а кнопка, которая всегда отвечает «чата нет», — обещание, которого
+    // интерфейс не сдержит.
+    b.chats.length
+      ? el("button", {
+        class: "btn btn--wide",
+        type: "button",
+        text: "Подтянуть переписку",
+        onclick: ev => pull(ev.currentTarget),
+      })
+      : null,
+    // Удаление стоит здесь, а не в глубине вкладки «Версии», где его никто не
+    // находил. Оно необратимое, поэтому отделено чертой и набрано красным.
+    el("div", { class: "rail__sep" }),
+    el("button", {
+      class: "btn btn--wide btn--danger",
+      type: "button",
+      text: "Удалить версию v" + h.version,
+      onclick: () => dropVersion(h.version, b.versions.length === 1),
+    }),
+    b.slice.editedFields.length
+      ? el("button", {
+        class: "btn btn--wide",
+        type: "button",
+        text: "Снять все правки",
+        onclick: () => dropCorrections(""),
+      })
+      : null));
+
+  // Разбор и правка названы отдельно: поправленная версия всё равно стоит на
+  // разборе — правка меняет одно поле из двадцати.
+  rail.append(el("div", { class: "rail__note" },
+    el("div", { text: "срез v" + h.version + " · " + h.builtAt }),
+    el("div", { text: "разбор: " + h.analyst }),
+    h.editedBy ? el("div", { text: "правка: " + h.editedBy }) : null,
+    el("div", { text: "фактов в журнале: " + b.facts })));
+
+  return rail;
 }
 
 // tabbed собирает ряд вкладок и тело под ним.
@@ -730,7 +1082,7 @@ async function open(id) {
 // --- диалог ---
 
 // ask показывает форму и возвращает значения полей либо null, если отменили.
-function ask(title, fields) {
+function ask(title, fields, extra) {
   const dlg = $("#modal");
   const body = $("#modal-body");
   $("#modal-title").textContent = title;
@@ -807,23 +1159,15 @@ function ask(title, fields) {
     body.append(el("div", { class: "field" }, row));
   }
 
-  dlg.returnValue = "";
-  dlg.showModal();
+  const answer = openModal(dlg, extra, () => {
+    const out = {};
+    for (const [name, input] of Object.entries(inputs)) out[name] = input.value.trim();
+    return out;
+  });
+
   const first = Object.values(inputs)[0];
   if (first) first.focus();
-
-  return new Promise(resolve => {
-    dlg.addEventListener("close", function done() {
-      dlg.removeEventListener("close", done);
-      if (dlg.returnValue !== "ok") {
-        resolve(null);
-        return;
-      }
-      const out = {};
-      for (const [name, input] of Object.entries(inputs)) out[name] = input.value.trim();
-      resolve(out);
-    });
-  });
+  return answer;
 }
 
 // --- действия ---

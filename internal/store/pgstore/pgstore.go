@@ -777,9 +777,72 @@ func (s *Store) DeleteSlice(ctx context.Context, taskID string, version int) err
 	return nil
 }
 
+// --- правки среза ---
+
+func (s *Store) AddCorrection(ctx context.Context, c domain.Correction) error {
+	if _, err := s.Task(ctx, c.TaskID); err != nil {
+		return err
+	}
+
+	const q = `INSERT INTO corrections (id, task_id, field, doc, author, at)
+	           VALUES ($1, $2, $3, $4, $5, $6)`
+
+	_, err := s.pool.Exec(ctx, q, c.ID, c.TaskID, c.Field, []byte(c.Doc), c.Author, nullTime(c.At))
+	if err != nil {
+		if isUnique(err) {
+			return fmt.Errorf("правка %s: %w", c.ID, store.ErrExists)
+		}
+		return fmt.Errorf("запись правки %s: %w", c.ID, err)
+	}
+	return nil
+}
+
+func (s *Store) Corrections(ctx context.Context, taskID string) ([]domain.Correction, error) {
+	// От ранних к поздним — в том порядке, в каком правки ложатся на срез.
+	const q = `SELECT id, task_id, field, doc, author, at FROM corrections
+	           WHERE task_id = $1 ORDER BY seq`
+
+	rows, err := s.pool.Query(ctx, q, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("чтение правок задачи %s: %w", taskID, err)
+	}
+	defer rows.Close()
+
+	var out []domain.Correction
+	for rows.Next() {
+		var (
+			c   domain.Correction
+			doc []byte
+			at  *time.Time
+		)
+		if err := rows.Scan(&c.ID, &c.TaskID, &c.Field, &doc, &c.Author, &at); err != nil {
+			return nil, fmt.Errorf("чтение правок задачи %s: %w", taskID, err)
+		}
+		c.Doc = doc
+		c.At = timeOf(at)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DropCorrections(ctx context.Context, taskID, field string) (int, error) {
+	q := `DELETE FROM corrections WHERE task_id = $1`
+	args := []any{taskID}
+	if field != "" {
+		q += ` AND field = $2`
+		args = append(args, field)
+	}
+
+	tag, err := s.pool.Exec(ctx, q, args...)
+	if err != nil {
+		return 0, fmt.Errorf("снятие правок задачи %s: %w", taskID, err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // --- журнал инцидентов ---
 
-const incidentCols = `id, employee, project, task_id, at, created_at, block, txt, external,
+const incidentCols =`id, employee, project, task_id, at, created_at, block, txt, external,
 	escalated, escalated_at, manager_note, recorded_by`
 
 func (s *Store) AddIncident(ctx context.Context, in domain.Incident) error {

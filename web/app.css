@@ -887,8 +887,15 @@ h1 {
   .page { padding: 36px 32px 100px; }
 }
 
-@media (max-width: 900px) {
+/* Нижняя граница здесь обязательна. Ниже 860 боковая колонка скрыта, а это
+   правило шло в файле позже и возвращало сетке две колонки — скрытая колонка
+   из потока выпадала, и содержимое занимало первую, шириной в 210 пикселей.
+   Страница схлопывалась в узкую ленту, и виноватым выглядел не тот блок. */
+@media (max-width: 900px) and (min-width: 861px) {
   .app { grid-template-columns: 210px 1fr; }
+}
+
+@media (max-width: 900px) {
   .page { padding: 28px 22px 96px; }
   h1 { font-size: 24px; }
   .row { grid-template-columns: 1fr; gap: 2px; }
@@ -1167,3 +1174,158 @@ h1 {
    третьей. */
 .btn--danger { color: var(--red); }
 .btn--danger:hover { background: var(--red-bg); border-color: var(--red); }
+
+/* --- страница задачи в две колонки --- */
+
+/* Раньше всё шло одной лентой: сводка, ряд кнопок, срез. Через полтора экрана
+   прокрутки на виду не оставалось ни готовности, ни срока, ни блокеров — а срез
+   читают ради них и сверяются с ними по ходу. Кнопки уезжали туда же, и
+   «удалить версию» никто не находил.
+
+   Теперь чтение слева, состояние и действия справа; правая колонка прибита к
+   верху окна. */
+.page--split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 264px;
+  gap: 44px;
+  max-width: 1240px;
+}
+
+.col { min-width: 0; }
+
+.rail {
+  position: sticky;
+  top: 44px;
+  align-self: start;
+  display: grid;
+  gap: 14px;
+  font-size: 13px;
+}
+
+.rail__box {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 15px;
+  background: var(--panel);
+  display: grid;
+  gap: 8px;
+}
+
+.rail__label {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: .07em;
+}
+
+/* Готовность — первая цифра, которую называют заказчику. Здесь она и набрана
+   как цифра, а не как строка справки. */
+.rail__big { font-size: 26px; font-weight: 600; line-height: 1.1; letter-spacing: -.02em; }
+.rail__big .mark { font-size: 12px; vertical-align: 6px; }
+
+.rail__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+.rail__row--warn .rail__v { color: var(--red); }
+.rail__v { text-align: right; color: var(--text); font-weight: 500; min-width: 0; }
+
+/* Внутри колонки предупреждения набраны мельче: они сопровождают числа, а не
+   спорят с ними. */
+.rail .warns { margin: 0; }
+.rail .warn { font-size: 12.5px; padding-left: 10px; }
+
+.rail__sep { height: 1px; background: var(--line); margin: 4px 0; }
+
+.rail__note {
+  font-size: 11.5px;
+  color: var(--faint);
+  line-height: 1.5;
+  padding: 0 2px;
+}
+
+/* Узкое окно: колонка уходит под содержимое и перестаёт быть липкой — липкий
+   блок высотой в пол-экрана посреди чтения мешал бы. */
+@media (max-width: 1080px) {
+  .page--split { grid-template-columns: minmax(0, 1fr); gap: 28px; }
+  .rail { position: static; }
+}
+
+/* --- редактор списка --- */
+
+.rowset { display: grid; gap: 10px; margin-bottom: 12px; }
+
+.rowset__row {
+  position: relative;
+  display: grid;
+  gap: 8px 12px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  padding: 12px 40px 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.rowset__field { display: grid; gap: 3px; min-width: 0; }
+
+/* Длинному тексту — вся ширина строки: критерий или основание блокера в колонку
+   шириной в полтора слова не читается и не пишется. */
+.rowset__field--text { grid-column: 1 / -1; }
+.rowset__field--check { display: flex; align-items: center; gap: 7px; }
+.rowset__field--check input { margin: 0; }
+
+.rowset__label {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.rowset__row input,
+.rowset__row select,
+.rowset__row textarea {
+  font: inherit;
+  font-size: 13.5px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-firm);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  width: 100%;
+  min-width: 0;
+}
+.rowset__row textarea { resize: vertical; line-height: 1.45; }
+.rowset__row input[type="checkbox"] { width: auto; }
+
+.rowset__drop {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  border: 0;
+  background: none;
+  color: var(--faint);
+  font-size: 13px;
+  line-height: 1;
+  padding: 5px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.rowset__drop:hover { background: var(--red-bg); color: var(--red); }
+
+/* Кнопка правки у подзаголовка списка. У одиночного значения карандаш прячется
+   до наведения, здесь — нет: у пустого списка наводить не на что, а первую
+   строку в него добавить надо. */
+.fix--list { opacity: 1; margin-left: 8px; font-size: 11.5px; }
+.sub .fix--list { margin-left: 0; }
+
+/* Диалог со списком бывает высоким — держим его в пределах экрана и прокручиваем
+   внутри, чтобы кнопки «сохранить» и «отмена» всегда оставались на месте. */
+.modal__body { max-height: 68vh; overflow-y: auto; }
+.modal__extra { margin-right: auto; }

@@ -18,6 +18,7 @@ package storetest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -58,6 +59,7 @@ func Run(t *testing.T, open New) {
 		{"Slices", testSlices},
 		{"SlicesUsing", testSlicesUsing},
 		{"SliceVersions", testSliceVersions},
+		{"Corrections", testCorrections},
 		{"Incidents", testIncidents},
 		{"DuplicateSource", testDuplicateSource},
 		{"ZeroDates", testZeroDates},
@@ -1255,6 +1257,109 @@ func testSliceVersions(t *testing.T, st store.Store) {
 	// номере выглядела бы как удавшееся удаление.
 	if err := st.DeleteSlice(ctx, "aura", 99); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("удаление несуществующей версии: ошибка %v, хотели ErrNotFound", err)
+	}
+}
+
+// testCorrections: правки среза, сделанные человеком. Ради них хранилище и
+// держит отдельный журнал: правка обязана пережить пересборку, иначе первая же
+// сборка стирала бы её и человек правил бы одно и то же по кругу.
+func testCorrections(t *testing.T, st store.Store) {
+	ctx := context.Background()
+
+	create(t, st, task("aura", utc(2026, time.June, 1)))
+	create(t, st, task("other", utc(2026, time.June, 2)))
+
+	// Правка в несуществующей задаче не записывается: класть её некуда.
+	orphan := domain.Correction{ID: "c-0", TaskID: "нет такой", Field: "status.stage",
+		Doc: []byte(`{"text":"идёт"}`)}
+	if err := st.AddCorrection(ctx, orphan); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("правка в неизвестной задаче: ошибка %v, хотели ErrNotFound", err)
+	}
+
+	add := func(id, taskID, field, doc string) {
+		t.Helper()
+		c := domain.Correction{
+			ID: id, TaskID: taskID, Field: field, Doc: []byte(doc),
+			Author: "amirullah", At: utc(2026, time.August, 10),
+		}
+		if err := st.AddCorrection(ctx, c); err != nil {
+			t.Fatalf("AddCorrection %s: %v", id, err)
+		}
+	}
+
+	add("c-1", "aura", "status.stage", `{"text":"первая","origin":"stated"}`)
+	add("c-2", "aura", "status.stage", `{"text":"вторая","origin":"stated"}`)
+	add("c-3", "aura", "goal.criteria", `[{"n":1,"text":"принято","met":true}]`)
+	add("c-4", "other", "status.stage", `{"text":"чужая","origin":"stated"}`)
+
+	if err := st.AddCorrection(ctx, domain.Correction{
+		ID: "c-1", TaskID: "aura", Field: "status.stage", Doc: []byte(`{}`),
+	}); !errors.Is(err, store.ErrExists) {
+		t.Errorf("повторный идентификатор: ошибка %v, хотели ErrExists", err)
+	}
+
+	list, err := st.Corrections(ctx, "aura")
+	if err != nil {
+		t.Fatalf("Corrections: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("правок %d, хотели 3: %+v", len(list), list)
+	}
+	// От ранних к поздним: порядок записи и есть порядок наложения на срез.
+	// Сортировать по дате нельзя — у c-1 и c-2 она одна и та же.
+	if list[0].ID != "c-1" || list[1].ID != "c-2" || list[2].ID != "c-3" {
+		t.Errorf("порядок правок: %s, %s, %s", list[0].ID, list[1].ID, list[2].ID)
+	}
+	// Сравниваем содержимое, а не байты: postgres хранит jsonb разобранным и
+	// отдаёт его со своим порядком ключей и своими пробелами. Требовать
+	// побайтового совпадения значило бы проверять форматирование базы, а
+	// хранилище обязано вернуть то же значение, а не ту же строку.
+	var got []domain.Criterion
+	if err := json.Unmarshal(list[2].Doc, &got); err != nil {
+		t.Fatalf("разбор правки: %v (%s)", err, list[2].Doc)
+	}
+	if len(got) != 1 || got[0].N != 1 || got[0].Text != "принято" || !got[0].Met {
+		t.Errorf("содержимое правки искажено: %+v", got)
+	}
+	if list[0].Author != "amirullah" || !list[0].At.Equal(utc(2026, time.August, 10)) {
+		t.Errorf("подпись правки: %q / %v", list[0].Author, list[0].At)
+	}
+
+	// Последняя правка поля перекрывает ранние — на этом держится вся правка
+	// списков: список называют целиком, а не по пунктам.
+	latest := domain.LatestCorrections(list)
+	if got := latest["status.stage"]; got.ID != "c-2" {
+		t.Errorf("последняя правка этапа = %s, хотели c-2", got.ID)
+	}
+
+	// Снятие идёт по полю: человек передумал править одно, а не всё.
+	n, err := st.DropCorrections(ctx, "aura", "status.stage")
+	if err != nil {
+		t.Fatalf("DropCorrections: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("снято %d правок, хотели 2", n)
+	}
+	if list, _ := st.Corrections(ctx, "aura"); len(list) != 1 || list[0].Field != "goal.criteria" {
+		t.Errorf("после снятия осталось %+v", list)
+	}
+
+	// Снимать было нечего — не ошибка: поле и так не правили.
+	if n, err := st.DropCorrections(ctx, "aura", "status.stage"); err != nil || n != 0 {
+		t.Errorf("повторное снятие: %d (%v)", n, err)
+	}
+
+	// Правки соседней задачи на месте: снятие не выходит за свою задачу.
+	if list, _ := st.Corrections(ctx, "other"); len(list) != 1 {
+		t.Errorf("правки другой задачи задеты: %+v", list)
+	}
+
+	// Пустое поле означает «все правки задачи».
+	if n, err := st.DropCorrections(ctx, "aura", ""); err != nil || n != 1 {
+		t.Errorf("снятие всех правок: %d (%v)", n, err)
+	}
+	if list, _ := st.Corrections(ctx, "aura"); len(list) != 0 {
+		t.Errorf("после снятия всех осталось %+v", list)
 	}
 }
 

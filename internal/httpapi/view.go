@@ -102,11 +102,11 @@ func newValue(v domain.Value, srcs sources) value {
 // девять, и лишний аргумент у всех остальных вызовов означал бы «здесь тоже
 // можно было бы, просто не стали».
 func editable(v value, field string) value {
-	label, ok := domain.Correctable()[field]
+	f, ok := domain.EditableField(field)
 	if !ok {
 		return v
 	}
-	v.Field, v.FieldLabel = field, label
+	v.Field, v.FieldLabel = f.Field, f.Label
 	return v
 }
 
@@ -216,6 +216,9 @@ type head struct {
 	Version int    `json:"version"`
 	BuiltAt string `json:"builtAt"`
 	Analyst string `json:"analyst"`
+
+	// EditedBy — кто собрал версию правкой. Пусто у версии, собранной разбором.
+	EditedBy string `json:"editedBy,omitempty"`
 }
 
 // milestone — этап плана.
@@ -265,6 +268,10 @@ type risk struct {
 	ID         string `json:"id"`
 	Summary    string `json:"summary"`
 	ImpactText string `json:"impactText,omitempty"`
+
+	// Days — то же влияние числом. Нужно форме правки: разобрать его обратно из
+	// «срок +3 дня» значило бы читать собственный вывод как ввод.
+	Days int `json:"days,omitempty"`
 	Spread     string `json:"spread,omitempty"`
 	Evidence   value  `json:"evidence"`
 }
@@ -341,13 +348,52 @@ type slice struct {
 	Questions []question `json:"questions"`
 	Artifacts []artifact `json:"artifacts"`
 	Sources   []source   `json:"sources"`
+
+	// Edit — что в этом срезе можно поправить: адрес поля, подпись и вид формы.
+	// Список приходит с сервера целиком, а не зашит в браузере: он закрытый и
+	// живёт в домене, и второй его список означал бы, что однажды они разойдутся.
+	Edit []editField `json:"edit"`
+
+	// EditedFields — поля, которые уже правили руками. Интерфейс по ним
+	// предлагает вернуть как было, и метит их в списке.
+	EditedFields []string `json:"editedFields"`
+
+	// Kinds — закрытые списки для форм правки. Вид блокера определяет, к кому
+	// идти, чтобы его снять; вид действия отличает действие от его отсутствия.
+	// Оба списка закрытые, и выбирать из них человек должен, а не печатать.
+	Kinds struct {
+		Blockers []option `json:"blockers"`
+		Actions  []option `json:"actions"`
+	} `json:"kinds"`
+}
+
+// editField — правимое поле в ответе.
+type editField struct {
+	Field string `json:"field"`
+	Label string `json:"label"`
+	Kind  string `json:"kind"`
+}
+
+// option — строка закрытого списка для выпадающего поля формы.
+type option struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+func newEditFields() []editField {
+	all := domain.Editable()
+	out := make([]editField, 0, len(all))
+	for _, f := range all {
+		out = append(out, editField{Field: f.Field, Label: f.Label, Kind: string(f.Kind)})
+	}
+	return out
 }
 
 // newSlice переводит срез в представление.
 //
 // Ни одного вычисления после этой функции не остаётся: все проценты, все дни и
 // все склонения посчитаны здесь, из домена, на дату now.
-func newSlice(sl domain.Slice, t domain.Task, list []domain.Source, now time.Time) slice {
+func newSlice(sl domain.Slice, t domain.Task, list []domain.Source, now time.Time, edited []string) slice {
 	srcs := newSources(list)
 	v := slice{TaskID: sl.TaskID}
 
@@ -390,6 +436,24 @@ func newSlice(sl domain.Slice, t domain.Task, list []domain.Source, now time.Tim
 			v.Sources = append(v.Sources, newSource(src, false))
 		}
 	}
+
+	v.Edit = newEditFields()
+	v.EditedFields = edited
+	if v.EditedFields == nil {
+		v.EditedFields = []string{}
+	}
+	for _, k := range []domain.BlockerKind{
+		domain.BlockerNoInfo, domain.BlockerNoAccess, domain.BlockerDependency,
+		domain.BlockerTechnical, domain.BlockerNoApproach, domain.BlockerNoTime,
+	} {
+		v.Kinds.Blockers = append(v.Kinds.Blockers, option{Value: string(k), Label: k.Label()})
+	}
+	for _, k := range []domain.PMActionKind{
+		domain.ActionApprove, domain.ActionAccess, domain.ActionConnect,
+		domain.ActionClarify, domain.ActionEscalate, domain.ActionNone,
+	} {
+		v.Kinds.Actions = append(v.Kinds.Actions, option{Value: string(k), Label: k.Label()})
+	}
 	return v
 }
 
@@ -401,6 +465,7 @@ func newHead(sl domain.Slice, t domain.Task, now time.Time) head {
 		Version:   sl.Version,
 		BuiltAt:   sl.BuiltAt.Format("02.01.2006, 15:04"),
 		Analyst:   sl.Analyst,
+		EditedBy:  sl.EditedBy,
 	}
 
 	h.Title = sl.Passport.Title.Text
@@ -520,6 +585,7 @@ func newRisks(list []domain.Risk, srcs sources) []risk {
 			ID:       r.ID,
 			Summary:  r.Summary,
 			Spread:   r.Spread,
+			Days:     r.DaysImpact,
 			Evidence: newValue(r.Evidence, srcs),
 		}
 		if r.DaysImpact > 0 {
