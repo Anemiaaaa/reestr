@@ -107,6 +107,10 @@ body {
 
 .page { max-width: 940px; margin: 0 auto; padding: 44px 56px 120px; }
 
+/* Ширина среза выбрана для чтения прозы. Журнал — таблица в девять столбцов, и
+   в той же колонке половина из них ушла бы под прокрутку. */
+.page--wide { max-width: 1560px; }
+
 .crumb { font-size: 12.5px; color: var(--faint); line-height: 1.45; }
 
 h1 {
@@ -972,3 +976,84 @@ h1 {
 .tick__box { font-size: 14px; }
 .tick--met .tick__text { color: var(--muted); }
 .tick__text { line-height: 1.45; }
+
+/* --- журнал инцидентов --- */
+
+/* Журнал — таблица, потому что таблицей его и вели. Просматривают его по
+   столбцу: у кого за месяц накопилось, где эскалации не было. Карточки
+   заставляли читать запись целиком, чтобы найти в ней одно поле. */
+.sheet {
+  margin-top: 22px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.journal {
+  border-collapse: collapse;
+  /* Минимум, ниже которого столбцы слипаются. Ниже него таблица уезжает под
+     горизонтальную прокрутку .sheet, а не ломается. */
+  min-width: 1180px;
+  width: 100%;
+  font-size: 13px;
+}
+
+.journal th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel);
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line-firm);
+  white-space: nowrap;
+}
+
+.journal td {
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.journal tbody tr:last-child td { border-bottom: none; }
+.jr:hover td { background: var(--hover); }
+
+/* Внешняя помеха — не претензия к человеку: она объясняет срыв, а не служит
+   поводом снизить оценку. Приглушённая строка говорит это до того, как
+   прочитают колонку «в зоне контроля». */
+.jr--external td { color: var(--muted); }
+
+.jr__date { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.jr__yn   { white-space: nowrap; }
+.jr__who  { white-space: nowrap; color: var(--muted); }
+
+/* Переносы строк в описании значимы: руководитель делит запись на факты и
+   последствия. Ширина ограничена, иначе одна длинная запись растягивает всю
+   таблицу и остальные столбцы сжимаются в ничто. */
+.jr__text {
+  white-space: pre-wrap;
+  min-width: 320px;
+  max-width: 460px;
+  line-height: 1.5;
+}
+
+/* Ссылка на задачу реестра внутри ячейки. Кнопка, а не <a>: переход идёт по
+   состоянию приложения, а не по адресу страницы. */
+.linkish {
+  display: block;
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--blue);
+  text-align: left;
+  cursor: pointer;
+}
+.linkish:hover { text-decoration: underline; }

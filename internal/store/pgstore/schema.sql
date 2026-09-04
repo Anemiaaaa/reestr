@@ -290,9 +290,15 @@ CREATE TABLE IF NOT EXISTS incidents (
 
     employee text NOT NULL,
 
-    -- Внешний ключ уместен: случая без задачи не бывает. «Дата, задача, что
-    -- произошло» — требование самой системы оплаты.
-    task_id text NOT NULL REFERENCES tasks (id),
+    -- Работа, в которой это случилось, словами руководителя. Свободная строка,
+    -- а не ссылка: журнал ведут по всем работам сразу, а в реестре заведены
+    -- единицы, и требовать заведённую задачу значило бы либо не записать случай
+    -- вовсе, либо завести задачу-пустышку ради строчки в журнале.
+    project text NOT NULL DEFAULT '',
+
+    -- Задача реестра, если случай произошёл в ней. NULL, а не пустая строка:
+    -- внешний ключ пустую строку не пропустит, а «задачи нет» — это NULL.
+    task_id text REFERENCES tasks (id),
 
     -- Дата события отдельно от даты внесения: случай могли зафиксировать через
     -- неделю, а относится он к своему дню.
@@ -309,7 +315,39 @@ CREATE TABLE IF NOT EXISTS incidents (
     -- записи: сама проблема не штрафуется, штрафуется молчание о ней, и
     -- внешняя помеха, о которой сообщили вовремя, объясняет срыв, а не служит
     -- поводом снизить оценку.
-    external boolean NOT NULL DEFAULT false
+    external boolean NOT NULL DEFAULT false,
+
+    -- Сообщили ли наверх и когда. Хранится признаком по той же причине, что и
+    -- external: блок «эскалация и самостоятельность» штрафует не проблему, а
+    -- молчание о ней, и вовремя названная помеха — довод в пользу специалиста.
+    escalated    boolean NOT NULL DEFAULT false,
+    escalated_at timestamptz,
+
+    -- Что руководитель решил по случаю. Пусто до разбора.
+    manager_note text NOT NULL DEFAULT '',
+
+    -- Кто внёс запись. Заполняется сервером из пропуска: журнал — основание для
+    -- разговора о деньгах, и подпись под ним должна быть настоящей.
+    recorded_by text NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS incidents_task_idx ON incidents (task_id, at NULLS FIRST, seq);
+
+-- Миграция 2: журнал догнал бумажную таблицу руководителя.
+--
+-- Столбцы добавляются, а не переписываются: записи, внесённые до этого,
+-- остаются на месте с пустыми новыми полями — так и должно быть, журнал
+-- дописывают, а не задним числом дополняют.
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS project      text    NOT NULL DEFAULT '';
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS escalated    boolean NOT NULL DEFAULT false;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS escalated_at timestamptz;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS manager_note text    NOT NULL DEFAULT '';
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS recorded_by  text    NOT NULL DEFAULT '';
+
+-- Задача перестала быть обязательной вместе с появлением project: место случая
+-- теперь называет он, а ссылка на задачу лишь связывает запись со срезом.
+ALTER TABLE incidents ALTER COLUMN task_id DROP NOT NULL;
+
+-- Старые записи держали место случая в task_id — перенесём его в project,
+-- чтобы журнал не показывал строку без проекта.
+UPDATE incidents SET project = task_id WHERE project = '' AND task_id IS NOT NULL;

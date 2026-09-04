@@ -1044,7 +1044,9 @@ async function openJournal() {
 
 function renderJournal() {
   const j = state.journal;
-  const page = el("div", { class: "page" },
+  // Журнал шире среза: у среза ширина ограничена ради чтения прозы, а здесь
+  // девять столбцов, и та же колонка загнала бы половину из них под прокрутку.
+  const page = el("div", { class: "page page--wide" },
     el("div", { class: "crumb", text: "Оценка KPI" }),
     el("h1", { text: "Журнал инцидентов" }),
     el("div", { class: "crumb" },
@@ -1065,53 +1067,97 @@ function renderJournal() {
     return;
   }
 
-  const list = el("ul", { class: "list", style: "margin-top:22px" });
-  for (const in_ of j.incidents) {
-    const top = el("div", { class: "card__top" },
-      el("span", { class: "card__title", text: in_.employee }),
-      el("span", { class: "tag", text: in_.blockLabel }),
-      el("span", { class: "card__meta", text: in_.at }));
-
-    // Текст случая — через textContent: это чужие слова о человеке, и
-    // разметкой они быть не должны ни при каких обстоятельствах.
-    const card = el("li", { class: in_.external ? "card" : "card card--warn" },
-      top,
-      el("div", { class: "card__body", text: in_.text }),
-      el("div", { class: "crumb", text: "задача: " + (in_.taskTitle || in_.taskId) }),
-      in_.note ? el("div", { class: "crumb", text: in_.note }) : null);
-    list.append(card);
-  }
-  page.append(list);
+  page.append(journalTable(j.incidents));
   $("#main").replaceChildren(page);
+}
+
+// journalTable рисует журнал таблицей — той же, что руководитель вёл в
+// электронной таблице.
+//
+// Карточки читались хуже: журнал просматривают по столбцу («у кого за месяц
+// накопилось», «где эскалации не было»), а карточка заставляет читать каждую
+// запись целиком, чтобы найти в ней одно поле. Столбцы стоят в том же порядке,
+// что и в исходной таблице, — переносить взгляд с бумаги на экран не приходится.
+function journalTable(incidents) {
+  const head = el("tr", {}, ["Дата", "Специалист", "Проект", "Блок KPI", "Что произошло",
+    "В зоне контроля", "Эскалация", "Комментарий руководителя", "Кто зафиксировал"]
+    .map(t => el("th", { text: t })));
+
+  const rows = incidents.map(in_ => {
+    // Проект — свободная строка руководителя; связанная задача реестра, если
+    // она есть, идёт под ним отдельной строкой: это ссылка на срез, а не
+    // второе название проекта.
+    const project = el("td", {}, el("div", { text: in_.project }),
+      in_.taskId
+        ? el("button", {
+            class: "linkish", type: "button", text: in_.taskTitle || in_.taskId,
+            onclick: () => open(in_.taskId),
+          })
+        : null);
+
+    // Текст случая — через textContent: это чужие слова о человеке, и разметкой
+    // они быть не должны ни при каких обстоятельствах. Переносы строк в нём
+    // значимы — руководитель делит запись на факты и последствия, — поэтому
+    // ячейка сохраняет их через CSS, а не через <br>.
+    return el("tr", { class: in_.external ? "jr jr--external" : "jr" },
+      el("td", { class: "jr__date", text: in_.at }),
+      el("td", { text: in_.employee }),
+      project,
+      el("td", {}, el("span", { class: "tag", text: in_.blockLabel })),
+      el("td", { class: "jr__text", text: in_.text }),
+      el("td", { class: "jr__yn" },
+        el("span", { text: in_.controlText }),
+        in_.note ? el("div", { class: "crumb", text: in_.note }) : null),
+      el("td", { class: "jr__yn", text: in_.escalatedText }),
+      el("td", { class: in_.managerNote ? null : "miss", text: in_.managerNote || "не разобрано" }),
+      el("td", { class: "jr__who", text: in_.recordedBy }));
+  });
+
+  return el("div", { class: "sheet" },
+    el("table", { class: "journal" },
+      el("thead", {}, head),
+      el("tbody", {}, rows)));
 }
 
 async function addIncident() {
   const j = state.journal;
-  const tasks = state.tasks.map(t => [t.id, t.title]);
-  if (!tasks.length) {
-    flash("Сначала нужна хотя бы одна задача: случай без задачи не проверить.");
-    return;
-  }
+  // Задача реестра необязательна: журнал ведут по всем работам сразу, а в
+  // реестр заведены единицы. Пустой первый пункт — это «случай не в задаче
+  // реестра», а не пропущенное поле.
+  const tasks = [["", "— не в задаче реестра —"], ...state.tasks.map(t => [t.id, t.title])];
 
   const got = await ask("Случай", [
-    { name: "employee", label: "Сотрудник", required: true, hint: "кого касается" },
-    { name: "taskId", label: "Задача", kind: "select", options: tasks },
-    { name: "at", label: "Когда случилось", kind: "date", required: true },
+    { name: "at", label: "Дата", kind: "date", required: true, hint: "когда случилось" },
+    { name: "employee", label: "Специалист", required: true, hint: "кого касается" },
+    { name: "project", label: "Проект", required: true, hint: "работа, в которой это случилось" },
+    { name: "taskId", label: "Задача реестра", kind: "select", options: tasks },
     // Ровно один блок: один случай не должен съедать несколько блоков сразу.
     { name: "block", label: "Блок KPI", kind: "select", options: j.blocks.map(b => [b.value, b.label]) },
-    { name: "text", label: "Что произошло", kind: "text", required: true, hint: "факты, а не оценка" },
+    { name: "text", label: "Что произошло", kind: "text", required: true, hint: "факты и последствия, а не оценка" },
     {
-      name: "external", label: "Вне зоны контроля", kind: "select",
-      options: [["", "нет"], ["yes", "да — помешал клиент или внешний фактор"]],
-      note: "Такой случай останется в журнале как объяснение, но в оценку не пойдёт.",
+      name: "control", label: "В зоне контроля специалиста", kind: "select",
+      options: [["yes", "да"], ["no", "нет — помешал клиент или внешний фактор"]],
+      note: "«Нет» оставит случай в журнале как объяснение, но в оценку он не пойдёт.",
     },
+    {
+      name: "escalated", label: "Была эскалация", kind: "select",
+      options: [["", "нет"], ["yes", "да — сообщили наверх"]],
+      note: "Эскалация меняет знак случая: штрафуется не проблема, а молчание о ней.",
+    },
+    { name: "escalatedAt", label: "Когда эскалировано", kind: "date" },
+    { name: "managerNote", label: "Комментарий руководителя", kind: "text" },
   ]);
   if (!got) return;
 
   try {
+    // Подпись «кто зафиксировал» не отправляем: её ставит сервер из пропуска.
     await api("/api/incidents", {
       method: "POST",
-      body: JSON.stringify({ ...got, external: got.external === "yes" }),
+      body: JSON.stringify({
+        ...got,
+        external: got.control === "no",
+        escalated: got.escalated === "yes",
+      }),
     });
     await openJournal();
   } catch (e) {

@@ -575,8 +575,12 @@ func (s *Store) SliceVersions(_ context.Context, taskID string) ([]domain.SliceR
 // --- журнал инцидентов ---
 
 func (s *Store) AddIncident(ctx context.Context, in domain.Incident) error {
-	if _, err := s.Task(ctx, in.TaskID); err != nil {
-		return err
+	// Случай без задачи реестра законен: место случая называет Project, а
+	// ссылка на задачу лишь связывает запись со срезом.
+	if in.TaskID != "" {
+		if _, err := s.Task(ctx, in.TaskID); err != nil {
+			return err
+		}
 	}
 
 	s.mu.Lock()

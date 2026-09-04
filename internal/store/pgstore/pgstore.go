@@ -679,6 +679,15 @@ func nullTime(t time.Time) any {
 	return t
 }
 
+// nullText переводит пустую строку в NULL. Нужно там, где на колонке висит
+// внешний ключ: пустую строку он не пропустит, а «ссылки нет» — это NULL.
+func nullText(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // timeOf — обратный перевод: NULL становится нулевым временем.
 func timeOf(p *time.Time) time.Time {
 	if p == nil {
@@ -751,20 +760,26 @@ func (s *Store) SliceVersions(ctx context.Context, taskID string) ([]domain.Slic
 
 // --- журнал инцидентов ---
 
-const incidentCols = `id, employee, task_id, at, created_at, block, txt, external`
+const incidentCols = `id, employee, project, task_id, at, created_at, block, txt, external,
+	escalated, escalated_at, manager_note, recorded_by`
 
 func (s *Store) AddIncident(ctx context.Context, in domain.Incident) error {
 	// Задача проверяется отдельным запросом, чтобы её отсутствие пришло как
-	// ErrNotFound, а не как нарушение внешнего ключа.
-	if _, err := s.Task(ctx, in.TaskID); err != nil {
-		return err
+	// ErrNotFound, а не как нарушение внешнего ключа. Случай без задачи реестра
+	// законен: место случая называет project, а ссылка лишь связывает запись со
+	// срезом.
+	if in.TaskID != "" {
+		if _, err := s.Task(ctx, in.TaskID); err != nil {
+			return err
+		}
 	}
 
 	const q = `INSERT INTO incidents (` + incidentCols + `)
-	           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+	           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
 
-	_, err := s.pool.Exec(ctx, q, in.ID, in.Employee, in.TaskID,
-		nullTime(in.At), nullTime(in.CreatedAt), string(in.Block), in.Text, in.External)
+	_, err := s.pool.Exec(ctx, q, in.ID, in.Employee, in.Project, nullText(in.TaskID),
+		nullTime(in.At), nullTime(in.CreatedAt), string(in.Block), in.Text, in.External,
+		in.Escalated, nullTime(in.EscalatedAt), in.ManagerNote, in.RecordedBy)
 	if err != nil {
 		if isUnique(err) {
 			return fmt.Errorf("случай %s: %w", in.ID, store.ErrExists)
@@ -794,18 +809,24 @@ func (s *Store) Incidents(ctx context.Context, taskID string) ([]domain.Incident
 	var out []domain.Incident
 	for rows.Next() {
 		var (
-			in          domain.Incident
-			block       string
-			at, created *time.Time
+			in               domain.Incident
+			block            string
+			task             *string
+			at, created, esc *time.Time
 		)
-		err := rows.Scan(&in.ID, &in.Employee, &in.TaskID, &at, &created,
-			&block, &in.Text, &in.External)
+		err := rows.Scan(&in.ID, &in.Employee, &in.Project, &task, &at, &created,
+			&block, &in.Text, &in.External,
+			&in.Escalated, &esc, &in.ManagerNote, &in.RecordedBy)
 		if err != nil {
 			return nil, fmt.Errorf("чтение журнала случаев: %w", err)
 		}
 		in.Block = domain.KPIBlock(block)
+		if task != nil {
+			in.TaskID = *task
+		}
 		in.At = timeOf(at)
 		in.CreatedAt = timeOf(created)
+		in.EscalatedAt = timeOf(esc)
 		out = append(out, in)
 	}
 	return out, rows.Err()

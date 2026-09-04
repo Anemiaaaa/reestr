@@ -818,7 +818,8 @@ func newDiff(before, after domain.Slice, changes []domain.SliceChange) diff {
 type incident struct {
 	ID         string `json:"id"`
 	Employee   string `json:"employee"`
-	TaskID     string `json:"taskId"`
+	Project    string `json:"project"`
+	TaskID     string `json:"taskId,omitempty"`
 	TaskTitle  string `json:"taskTitle,omitempty"`
 	At         string `json:"at"`
 	CreatedAt  string `json:"createdAt"`
@@ -826,6 +827,19 @@ type incident struct {
 	BlockLabel string `json:"blockLabel"`
 	Text       string `json:"text"`
 	External   bool   `json:"external"`
+
+	// ControlText — «в зоне контроля специалиста» словами, как в таблице
+	// руководителя. Строка, а не признак: интерфейс ничего не решает сам, а
+	// «да/нет» тут значат больше, чем галочка, — от них зависит, идёт ли случай
+	// в оценку.
+	ControlText string `json:"controlText"`
+
+	// EscalatedText — «была эскалация» словами, вместе с датой, если она
+	// названа: «да, 05.09.2026».
+	EscalatedText string `json:"escalatedText"`
+
+	ManagerNote string `json:"managerNote,omitempty"`
+	RecordedBy  string `json:"recordedBy,omitempty"`
 
 	// Note объясняет, почему внешняя помеха записана, но в оценку не идёт.
 	// Иначе строка в журнале читается как претензия к человеку.
@@ -836,17 +850,29 @@ func newIncidents(list []domain.Incident, titles map[string]string) []incident {
 	out := make([]incident, 0, len(list))
 	for _, in := range list {
 		v := incident{
-			ID: in.ID, Employee: in.Employee, TaskID: in.TaskID,
-			TaskTitle:  titles[in.TaskID],
-			At:         domain.FormatDate(in.At),
-			CreatedAt:  domain.FormatDate(in.CreatedAt),
-			Block:      string(in.Block),
-			BlockLabel: in.Block.Label(),
-			Text:       in.Text,
-			External:   in.External,
+			ID: in.ID, Employee: in.Employee, Project: in.Project, TaskID: in.TaskID,
+			TaskTitle:   titles[in.TaskID],
+			At:          domain.FormatDate(in.At),
+			CreatedAt:   domain.FormatDate(in.CreatedAt),
+			Block:       string(in.Block),
+			BlockLabel:  in.Block.Label(),
+			Text:        in.Text,
+			External:    in.External,
+			ControlText: "да",
+			ManagerNote: in.ManagerNote,
+			RecordedBy:  in.RecordedBy,
 		}
 		if in.External {
+			v.ControlText = "нет"
 			v.Note = "вне зоны контроля специалиста — в оценку не идёт"
+		}
+
+		v.EscalatedText = "нет"
+		if in.Escalated {
+			v.EscalatedText = "да"
+			if d := domain.FormatDate(in.EscalatedAt); d != "" {
+				v.EscalatedText += ", " + d
+			}
 		}
 		out = append(out, v)
 	}

@@ -647,13 +647,20 @@ func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
 }
 
 // incidentRequest — случай, как его присылает форма.
+// Поля «кто зафиксировал» здесь нет намеренно: подпись сервер ставит сам, из
+// пропуска. Журнал — основание для разговора о деньгах, и принимать подпись с
+// формы значило бы позволить подписаться чужим именем.
 type incidentRequest struct {
-	Employee string `json:"employee"`
-	TaskID   string `json:"taskId"`
-	At       date   `json:"at"`
-	Block    string `json:"block"`
-	Text     string `json:"text"`
-	External bool   `json:"external"`
+	Employee    string `json:"employee"`
+	Project     string `json:"project"`
+	TaskID      string `json:"taskId"`
+	At          date   `json:"at"`
+	Block       string `json:"block"`
+	Text        string `json:"text"`
+	External    bool   `json:"external"`
+	Escalated   bool   `json:"escalated"`
+	EscalatedAt date   `json:"escalatedAt"`
+	ManagerNote string `json:"managerNote"`
 }
 
 // incidents отдаёт журнал случаев вместе со списком блоков KPI.
@@ -690,12 +697,17 @@ func (s *Server) addIncident(w http.ResponseWriter, r *http.Request) {
 	}
 
 	in, err := s.svc.AddIncident(r.Context(), domain.Incident{
-		Employee: req.Employee,
-		TaskID:   req.TaskID,
-		At:       req.At.Time,
-		Block:    domain.KPIBlock(req.Block),
-		Text:     req.Text,
-		External: req.External,
+		Employee:    req.Employee,
+		Project:     req.Project,
+		TaskID:      req.TaskID,
+		At:          req.At.Time,
+		Block:       domain.KPIBlock(req.Block),
+		Text:        req.Text,
+		External:    req.External,
+		Escalated:   req.Escalated,
+		EscalatedAt: req.EscalatedAt.Time,
+		ManagerNote: req.ManagerNote,
+		RecordedBy:  s.viewer(r),
 	})
 	if err != nil {
 		s.fail(w, r, err)
@@ -760,12 +772,25 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 	http.ServeFileFS(w, r, s.web, "login.html")
 }
 
+// viewer возвращает логин по пропуску или пусто, если вход не настроен.
+//
+// Отдельный метод, потому что подпись под записью журнала берётся только
+// отсюда: у неё не должно быть второго источника, который однажды разойдётся с
+// этим.
+func (s *Server) viewer(r *http.Request) string {
+	if s.auth == nil {
+		return ""
+	}
+	c, err := r.Cookie(cookieName)
+	if err != nil {
+		return ""
+	}
+	login, _ := s.auth.Verify(c.Value)
+	return login
+}
+
 // who сообщает, кто вошёл. Нужен интерфейсу, чтобы показать имя и кнопку
 // выхода.
 func (s *Server) who(w http.ResponseWriter, r *http.Request) {
-	login := ""
-	if c, err := r.Cookie(cookieName); err == nil && s.auth != nil {
-		login, _ = s.auth.Verify(c.Value)
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"login": login})
+	writeJSON(w, http.StatusOK, map[string]string{"login": s.viewer(r)})
 }

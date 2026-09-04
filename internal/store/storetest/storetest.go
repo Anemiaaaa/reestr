@@ -1231,9 +1231,10 @@ func testIncidents(t *testing.T, st store.Store) {
 	create(t, st, task("aura", utc(2026, time.June, 1)))
 	create(t, st, task("other", utc(2026, time.June, 2)))
 
-	// Случай без задачи не записывается: проверить его нечем.
+	// Названная задача обязана существовать: ссылка на несуществующую связала бы
+	// запись журнала с пустотой.
 	orphan := domain.Incident{
-		ID: "i-0", Employee: "Кевин", TaskID: "нет такой",
+		ID: "i-0", Employee: "Кевин", Project: "АУРА", TaskID: "нет такой",
 		Block: domain.KPIDeadlines, Text: "сорвал срок",
 	}
 	if err := st.AddIncident(ctx, orphan); !errors.Is(err, store.ErrNotFound) {
@@ -1241,11 +1242,15 @@ func testIncidents(t *testing.T, st store.Store) {
 	}
 
 	want := domain.Incident{
-		ID: "i-1", Employee: "Кевин Джонсон", TaskID: "aura",
-		At:        utc(2026, time.August, 10),
-		CreatedAt: utc(2026, time.August, 12),
-		Block:     domain.KPIEscalate,
-		Text:      "молчал о блокере четыре дня",
+		ID: "i-1", Employee: "Кевин Джонсон", Project: "АУРА", TaskID: "aura",
+		At:          utc(2026, time.August, 10),
+		CreatedAt:   utc(2026, time.August, 12),
+		Block:       domain.KPIEscalate,
+		Text:        "молчал о блокере четыре дня",
+		Escalated:   true,
+		EscalatedAt: utc(2026, time.August, 14),
+		ManagerNote: "разобрали на планёрке",
+		RecordedBy:  "amirullah",
 	}
 	if err := st.AddIncident(ctx, want); err != nil {
 		t.Fatalf("AddIncident: %v", err)
@@ -1253,7 +1258,7 @@ func testIncidents(t *testing.T, st store.Store) {
 	// Внешняя помеха тоже попадает в журнал: сама проблема не штрафуется, но
 	// она объясняет срыв, и запись о ней нужна.
 	external := domain.Incident{
-		ID: "i-2", Employee: "Кевин Джонсон", TaskID: "aura",
+		ID: "i-2", Employee: "Кевин Джонсон", Project: "АУРА", TaskID: "aura",
 		At: utc(2026, time.August, 15), Block: domain.KPIDeadlines,
 		Text: "клиент не дал доступ", External: true,
 	}
@@ -1261,10 +1266,22 @@ func testIncidents(t *testing.T, st store.Store) {
 		t.Fatalf("AddIncident внешней помехи: %v", err)
 	}
 	if err := st.AddIncident(ctx, domain.Incident{
-		ID: "i-3", Employee: "Другой", TaskID: "other",
+		ID: "i-3", Employee: "Другой", Project: "Другой проект", TaskID: "other",
 		At: utc(2026, time.August, 20), Block: domain.KPIHours, Text: "недозагрузка",
 	}); err != nil {
 		t.Fatalf("AddIncident по другой задаче: %v", err)
+	}
+
+	// Случай по работе, которой в реестре нет, записывается: журнал ведут по
+	// всем работам сразу, а в реестр заводят единицы. Иначе такой случай либо не
+	// попал бы в журнал, либо потребовал бы задачи-пустышки ради строчки.
+	loose := domain.Incident{
+		ID: "i-4", Employee: "Мурад", Project: "Супермаркет Гранат",
+		At: utc(2026, time.August, 25), Block: domain.KPIDiscipline,
+		Text: "не сообщил клиенту о завершении работы",
+	}
+	if err := st.AddIncident(ctx, loose); err != nil {
+		t.Fatalf("AddIncident без задачи реестра: %v", err)
 	}
 
 	// Занятый идентификатор — отказ: журнал только пополняется, и запись,
@@ -1277,12 +1294,13 @@ func testIncidents(t *testing.T, st store.Store) {
 	if err != nil {
 		t.Fatalf("Incidents: %v", err)
 	}
-	if len(all) != 3 {
-		t.Fatalf("случаев %d, хотели 3: %+v", len(all), all)
+	if len(all) != 4 {
+		t.Fatalf("случаев %d, хотели 4: %+v", len(all), all)
 	}
-	// Свежие первыми: журнал читают с последних событий.
-	if all[0].ID != "i-3" || all[2].ID != "i-1" {
-		t.Errorf("порядок случаев: %s, %s, %s", all[0].ID, all[1].ID, all[2].ID)
+	// Свежие первыми: журнал читают с последних событий. Случай без задачи
+	// реестра идёт в общем ряду — журнал ведут по человеку и дню.
+	if all[0].ID != "i-4" || all[3].ID != "i-1" {
+		t.Errorf("порядок случаев: %s, %s, %s, %s", all[0].ID, all[1].ID, all[2].ID, all[3].ID)
 	}
 
 	byTask, err := st.Incidents(ctx, "aura")
@@ -1297,17 +1315,29 @@ func testIncidents(t *testing.T, st store.Store) {
 	switch {
 	case got.ID != want.ID || got.Employee != want.Employee:
 		t.Errorf("запись искажена: %+v", got)
+	case got.Project != want.Project:
+		t.Errorf("проект = %q", got.Project)
 	case got.Block != domain.KPIEscalate:
 		t.Errorf("блок KPI = %q", got.Block)
 	case got.Text != want.Text:
 		t.Errorf("текст = %q", got.Text)
 	case got.External:
 		t.Error("обычный случай помечен внешней помехой")
+	case !got.Escalated:
+		t.Error("эскалация не сохранилась")
+	case got.ManagerNote != want.ManagerNote:
+		t.Errorf("комментарий руководителя = %q", got.ManagerNote)
+	case got.RecordedBy != want.RecordedBy:
+		t.Errorf("кто зафиксировал = %q", got.RecordedBy)
 	}
 	// Дата события отдельно от даты внесения: случай могли зафиксировать через
-	// неделю, а относится он к своему дню.
+	// неделю, а относится он к своему дню. Дата эскалации — третья: сообщить
+	// наверх могли ещё позже.
 	if !got.At.Equal(want.At) || !got.CreatedAt.Equal(want.CreatedAt) {
 		t.Errorf("даты: событие %v, внесено %v", got.At, got.CreatedAt)
+	}
+	if !got.EscalatedAt.Equal(want.EscalatedAt) {
+		t.Errorf("дата эскалации = %v, хотели %v", got.EscalatedAt, want.EscalatedAt)
 	}
 	if !byTask[0].External {
 		t.Error("внешняя помеха не отмечена")

@@ -655,16 +655,25 @@ func (s *Service) CompareVersions(ctx context.Context, taskID string, a, b int) 
 // видна.
 func (s *Service) AddIncident(ctx context.Context, in domain.Incident) (domain.Incident, error) {
 	in.Employee = strings.TrimSpace(in.Employee)
+	in.Project = strings.TrimSpace(in.Project)
 	in.TaskID = strings.TrimSpace(in.TaskID)
 	in.Text = strings.TrimSpace(in.Text)
+	in.ManagerNote = strings.TrimSpace(in.ManagerNote)
+	in.RecordedBy = strings.TrimSpace(in.RecordedBy)
+
+	// Дата эскалации без самой эскалации — противоречие, и хранить его значило
+	// бы показывать в журнале «эскалации не было, эскалировано 5 сентября».
+	if !in.Escalated {
+		in.EscalatedAt = time.Time{}
+	}
 
 	switch {
 	case in.Employee == "":
 		return domain.Incident{}, fmt.Errorf("не указан сотрудник: %w", ErrInvalid)
-	case in.TaskID == "":
+	case in.Project == "":
 		// «Дата, задача, что произошло» — требование самой системы оплаты.
-		// Случай без задачи специалисту нечем показать.
-		return domain.Incident{}, fmt.Errorf("не указана задача: %w", ErrInvalid)
+		// Случай без работы, в которой он произошёл, специалисту нечем показать.
+		return domain.Incident{}, fmt.Errorf("не указан проект: %w", ErrInvalid)
 	case in.Text == "":
 		return domain.Incident{}, fmt.Errorf("не описано, что произошло: %w", ErrInvalid)
 	case !in.Block.Valid():
@@ -690,7 +699,7 @@ func (s *Service) AddIncident(ctx context.Context, in domain.Incident) (domain.I
 		return domain.Incident{}, err
 	}
 	s.log.Info("случай записан",
-		"случай", in.ID, "сотрудник", in.Employee, "задача", in.TaskID, "блок", in.Block)
+		"случай", in.ID, "сотрудник", in.Employee, "проект", in.Project, "блок", in.Block)
 	return in, nil
 }
 
