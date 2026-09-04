@@ -758,6 +758,25 @@ func (s *Store) SliceVersions(ctx context.Context, taskID string) ([]domain.Slic
 	return out, rows.Err()
 }
 
+// DeleteSlice убирает версию среза.
+//
+// Указатели slice_sources уходят вместе с ней по каскаду, объявленному в схеме:
+// они отвечают на вопрос «в каких срезах участвовал источник», а срезу, которого
+// нет, участвовать не в чем. Сами источники и факты остаются — из них картину
+// собирают заново.
+func (s *Store) DeleteSlice(ctx context.Context, taskID string, version int) error {
+	const q = `DELETE FROM slices WHERE task_id = $1 AND version = $2`
+
+	tag, err := s.pool.Exec(ctx, q, taskID, version)
+	if err != nil {
+		return fmt.Errorf("удаление среза %s версии %d: %w", taskID, version, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("срез %s версии %d: %w", taskID, version, store.ErrNotFound)
+	}
+	return nil
+}
+
 // --- журнал инцидентов ---
 
 const incidentCols = `id, employee, project, task_id, at, created_at, block, txt, external,

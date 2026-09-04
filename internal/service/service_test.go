@@ -625,6 +625,31 @@ func TestAssembleFactsOverCard(t *testing.T) {
 			wantAuthor: "",
 			wantOrigin: domain.OriginMissing,
 		},
+		{
+			// Ради этого исключения из правила «поздний перекрывает ранний»
+			// правка вообще возможна: иначе первая же пересборка стирала бы её,
+			// и человек правил бы одно и то же по кругу.
+			name: "разбор не перебивает сказанного человеком",
+			task: card,
+			facts: []domain.Fact{
+				{Field: "passport.author", Value: domain.Stated("Ризван Казумов", "правку внёс amirullah")},
+				{Field: "passport.author", Value: domain.Quoted("Модель нашла другого", "s2", "цитата")},
+			},
+			wantAuthor: "Ризван Казумов",
+			wantOrigin: domain.OriginStated,
+		},
+		{
+			// А вот вторая правка первую перекрывает: человек передумал, и
+			// последнее его слово и есть ответ.
+			name: "поздняя правка перекрывает раннюю",
+			task: card,
+			facts: []domain.Fact{
+				{Field: "passport.author", Value: domain.Stated("Первый ответ", "правка")},
+				{Field: "passport.author", Value: domain.Stated("Передумал", "правка")},
+			},
+			wantAuthor: "Передумал",
+			wantOrigin: domain.OriginStated,
+		},
 	}
 
 	for _, tt := range tests {

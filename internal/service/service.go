@@ -475,7 +475,14 @@ func assemble(
 ) domain.Slice {
 	byField := make(map[string]domain.Value, len(facts))
 	for _, f := range facts {
-		byField[f.Field] = f.Value // поздний факт перекрывает ранний
+		// Поздний факт перекрывает ранний — кроме сказанного человеком: оно
+		// старше любого разбора. Без этого исключения первая же пересборка
+		// стирала бы правку, и человек правил бы одно и то же по кругу.
+		if prev, ok := byField[f.Field]; ok &&
+			prev.Origin == domain.OriginStated && f.Value.Origin != domain.OriginStated {
+			continue
+		}
+		byField[f.Field] = f.Value
 	}
 
 	sl := domain.Slice{
@@ -485,13 +492,15 @@ func assemble(
 		Analyst:  analystName,
 		Passport: passport(task, byField),
 		Goal: domain.Goal{
-			AsStated:   out.GoalAsStated,
-			Clarified:  out.GoalClarified,
+			// Цель и этап приходят от аналитика, но проходят через факты: иначе
+			// правка человека держалась бы ровно до следующего разбора.
+			AsStated:   value(byField, "goal.asStated", out.GoalAsStated),
+			Clarified:  value(byField, "goal.clarified", out.GoalClarified),
 			Criteria:   out.Criteria,
 			OutOfScope: out.OutOfScope,
 		},
 		Status: domain.Status{
-			Stage:      out.Stage,
+			Stage:      value(byField, "status.stage", out.Stage),
 			Readiness:  readiness(out.Milestones),
 			Milestones: sortMilestones(out.Milestones),
 			Done:       out.Done,
@@ -620,6 +629,112 @@ func (s *Service) SliceVersion(ctx context.Context, taskID string, version int) 
 		return domain.Slice{}, fmt.Errorf("версия %d: %w", version, ErrInvalid)
 	}
 	return s.store.SliceVersion(ctx, taskID, version)
+}
+
+// Correct записывает значение, названное человеком, и собирает с ним новую
+// версию среза.
+//
+// Правка не переписывает версию, а заводит следующую. Причина не в
+// осторожности: срез — основание для разговора с заказчиком, и «в прошлый раз
+// тут стояло другое» должно оставаться проверяемым. Переписанная задним числом
+// версия сделала бы историю версий бесполезной именно там, где она нужна.
+//
+// Модель при этом не зовётся. Правка — не новый материал, а другое знание о том
+// же: разбор ничего не добавит, а стоит денег.
+//
+// Само значение ложится ещё и в журнал фактов. Без этого правка держалась бы до
+// первой пересборки: та собирает срез из фактов, и сказанного человеком в нём
+// просто не было бы.
+func (s *Service) Correct(ctx context.Context, taskID, field, text, author string) (domain.Slice, error) {
+	field = strings.TrimSpace(field)
+	text = strings.TrimSpace(text)
+	author = strings.TrimSpace(author)
+
+	label, ok := domain.Correctable()[field]
+	if !ok {
+		return domain.Slice{}, fmt.Errorf("поле %q не правится: %w", field, ErrInvalid)
+	}
+	if text == "" {
+		// Стереть значение правкой нельзя. Пустое поле в срезе означает «в
+		// источниках ответа нет», а здесь ответ как раз есть — у человека.
+		return domain.Slice{}, fmt.Errorf("%s: значение не может быть пустым: %w", label, ErrInvalid)
+	}
+
+	latest, err := s.store.LatestSlice(ctx, taskID)
+	if err != nil {
+		return domain.Slice{}, err
+	}
+
+	now := s.now()
+	note := "правку внёс " + author + " " + domain.FormatDate(now)
+	if author == "" {
+		note = "правка от " + domain.FormatDate(now)
+	}
+	v := domain.Stated(text, note)
+
+	fact := domain.Fact{
+		ID:     newID("f"),
+		TaskID: taskID,
+		Field:  field,
+		Value:  v,
+		// Единица: за значением стоит человек, а не оценка модели.
+		Confidence: 1,
+		ObservedAt: now,
+		CreatedAt:  now,
+	}
+	if err := s.store.AddFacts(ctx, []domain.Fact{fact}); err != nil {
+		return domain.Slice{}, err
+	}
+
+	version, err := s.store.NextSliceVersion(ctx, taskID)
+	if err != nil {
+		return domain.Slice{}, err
+	}
+
+	sl := latest
+	sl.Version = version
+	sl.BuiltAt = now
+	// Кто собрал версию, тем она и подписана. Оставить здесь имя модели значило
+	// бы приписать ей чужие слова.
+	sl.Analyst = "правка: " + author
+	if author == "" {
+		sl.Analyst = "правка"
+	}
+	if !sl.SetField(field, v) {
+		return domain.Slice{}, fmt.Errorf("поле %q не правится: %w", field, ErrInvalid)
+	}
+	sl.SourceIDs = sl.UsedSources()
+
+	if err := s.store.SaveSlice(ctx, sl); err != nil {
+		return domain.Slice{}, err
+	}
+	s.log.Info("срез поправлен",
+		"задача", taskID, "версия", sl.Version, "поле", field, "кто", author)
+	return sl, nil
+}
+
+// DeleteSliceVersion убирает версию среза.
+//
+// Единственное изъятие в реестре, который иначе только пополняется, и оно
+// оговорено: срез — не запись о событии, а собранная картина, и неудачная
+// сборка ничего не свидетельствует. Материал остаётся на месте: источники и
+// факты не трогаются, и по ним картину собирают заново.
+//
+// Последнюю версию удалить можно: тогда текущей становится предыдущая. Если
+// версий не остаётся вовсе, задача открывается пересборкой — тем же путём, что
+// и только что созданная.
+func (s *Service) DeleteSliceVersion(ctx context.Context, taskID string, version int) error {
+	if version <= 0 {
+		return fmt.Errorf("версия %d: %w", version, ErrInvalid)
+	}
+	if _, err := s.store.Task(ctx, taskID); err != nil {
+		return err
+	}
+	if err := s.store.DeleteSlice(ctx, taskID, version); err != nil {
+		return err
+	}
+	s.log.Info("версия среза удалена", "задача", taskID, "версия", version)
+	return nil
 }
 
 // CompareVersions отвечает, что изменилось между двумя версиями среза.

@@ -935,7 +935,10 @@ h1 {
   letter-spacing: .07em;
   margin-bottom: 3px;
 }
-.spec__value { font-size: 14px; line-height: 1.4; }
+/* Значения в справке чуть плотнее по начертанию, чем подписи над ними: справку
+   читают по значениям, а подписи только объясняют, что это за значение. Без
+   этой разницы паспорт был ровным серым полем, по которому глаз скользил. */
+.spec__value { font-size: 14.5px; font-weight: 500; line-height: 1.4; }
 
 /* Цель — единственное место среза, которое читают целиком, а не глазами по
    диагонали. Ей и набор как у текста: крупнее, свободнее, в колонке нормальной
@@ -960,11 +963,29 @@ h1 {
    размера по месту и выглядел как заголовок раздела помельче — граница между
    «раздел» и «часть раздела» терялась. */
 .sub {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
   font-size: 13px;
   font-weight: 600;
   color: var(--muted);
   margin: 26px 0 10px;
   letter-spacing: .01em;
+  padding-bottom: 5px;
+  /* Волосяная линейка отделяет часть раздела от предыдущего списка. Без неё
+     «Осталось» после двенадцати строк «Сделано» читалось как тринадцатая. */
+  border-bottom: 1px solid var(--line);
+}
+
+/* Счёт у подзаголовка: сколько строк в списке и сколько из них закрыто. Прижат
+   вправо, чтобы у всех подзаголовков он стоял по одной вертикали и читался
+   столбцом, а не хвостом каждой подписи. */
+.sub__note {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Отступ сверху нужен подзаголовку только когда над ним что-то есть. Сразу под
@@ -974,10 +995,21 @@ h1 {
 
 /* Критерии приёмки: выполненный отличается от невыполненного не только
    галочкой, но и тоном — по списку видно счёт, не вчитываясь. */
-.tick { padding: 3px 0; }
+.tick { padding: 4px 0; align-items: baseline; }
 .tick__box { font-size: 14px; }
 .tick--met .tick__text { color: var(--muted); }
 .tick__text { line-height: 1.45; }
+
+/* Номер критерия — отдельной колонкой. Приклеенный к тексту, он ломал выключку:
+   вторая строка длинного критерия начиналась под цифрой, а не под словом. */
+.tick { grid-template-columns: 20px auto 1fr; }
+.tick > div { grid-column: 3; }
+.tick__n {
+  font-size: 12px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  min-width: 14px;
+}
 
 /* --- журнал инцидентов --- */
 
@@ -1095,3 +1127,43 @@ h1 {
   cursor: pointer;
 }
 .linkish:hover { text-decoration: underline; }
+
+/* --- правка среза человеком --- */
+
+/* Пятое происхождение: значение назвал тот, кто ведёт задачу. Цвет отдельный,
+   потому что и утверждение отдельного рода — не из переписки и не выведенное,
+   а знание человека, которое переписка ещё не догнала. */
+.mark--stated { color: var(--amber); }
+
+/* Карандаш виден по наведению. Правка нужна изредка, а девять карандашей на
+   экране разом кричали бы, что срез недоделан. По фокусу с клавиатуры он виден
+   всегда: иначе до него нельзя дойти, не видя, куда идёшь. */
+.val { position: relative; }
+
+.fix {
+  border: 0;
+  background: none;
+  padding: 2px 4px;
+  margin-left: 2px;
+  border-radius: 3px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--faint);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .12s;
+}
+.val--fixable:hover .fix,
+.fix:focus-visible { opacity: 1; }
+.fix:hover { background: var(--hover); color: var(--text); }
+
+/* Прикосновением навести нельзя, и там карандаш обязан быть виден сразу. */
+@media (hover: none) {
+  .fix { opacity: 1; }
+}
+
+/* Удаление версии — единственное необратимое действие в реестре. Красным, но не
+   залитым: кнопка не должна перетягивать на себя ряд, в котором она стоит
+   третьей. */
+.btn--danger { color: var(--red); }
+.btn--danger:hover { background: var(--red-bg); border-color: var(--red); }

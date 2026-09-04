@@ -77,12 +77,14 @@ const state = {
 // значение держится: цитата, источник, пояснение. Пока не раскрыли — на экране
 // только значение, и оно не тонет в служебных подписях.
 function val(v) {
-  const box = el("div", {});
+  const box = el("div", { class: v.field ? "val val--fixable" : "val" });
   box.append(el("span", { class: v.known ? null : "miss", text: v.text }));
 
+  // Через put, а не через append напрямую: append превращает null в строку
+  // «null» и печатает её на экране, а карандаша у неправимого поля нет.
   const backing = v.quote || v.note || v.sourceTitle;
   if (!backing) {
-    box.append(el("span", { class: "mark mark--" + v.origin, text: v.mark, title: v.originLabel }));
+    put(box, [el("span", { class: "mark mark--" + v.origin, text: v.mark, title: v.originLabel }), fix(v)]);
     return box;
   }
 
@@ -109,8 +111,51 @@ function val(v) {
     },
   });
 
-  box.append(btn, quote);
+  put(box, [btn, fix(v), quote]);
   return box;
+}
+
+// fix — карандаш правки у значения, которое человек может назвать сам.
+//
+// Появляется только у полей с адресом: список правимых полей живёт на сервере,
+// в домене, и браузер про него ничего не решает. Виден по наведению — правка
+// нужна изредка, а девять карандашей на экране кричали бы, что срез недоделан.
+function fix(v) {
+  if (!v.field) return null;
+  return el("button", {
+    class: "fix",
+    type: "button",
+    title: "Поправить: " + v.fieldLabel,
+    text: "✎",
+    onclick: () => correct(v),
+  });
+}
+
+// correct спрашивает верное значение и записывает его.
+//
+// Правка не переписывает версию, а заводит следующую: срез — основание для
+// разговора с заказчиком, и «в прошлый раз тут стояло другое» должно оставаться
+// проверяемым.
+async function correct(v) {
+  const got = await ask("Поправить срез", [
+    {
+      name: "text", label: v.fieldLabel, kind: "text", required: true,
+      value: v.known ? v.text : "",
+      note: "Значение встанет в срез как сказанное вами и пересборкой не затрётся. " +
+        "Появится новая версия — прежняя останется в истории.",
+    },
+  ]);
+  if (!got) return;
+
+  try {
+    await api("/api/tasks/" + encodeURIComponent(state.current) + "/slice/correct", {
+      method: "POST",
+      body: JSON.stringify({ field: v.field, text: got.text }),
+    });
+    await open(state.current);
+  } catch (e) {
+    flash(e.message);
+  }
 }
 
 function field(label, v) {
@@ -247,9 +292,13 @@ function ticks(items) {
   return el("ul", { class: "ticks" }, items);
 }
 
-function tick(box, met, body, note) {
+// tick — строка списка с пометкой слева. Номер, если он есть, идёт отдельной
+// колонкой, а не приклеивается к тексту: приклеенный, он ломал выключку —
+// вторая строка длинного критерия начиналась под цифрой, а не под словом.
+function tick(box, met, body, note, n) {
   return el("li", { class: met ? "tick tick--met" : "tick" },
     el("span", { class: met ? "tick__box tick__box--met" : "tick__box", text: box }),
+    n ? el("span", { class: "tick__n", text: n }) : null,
     el("div", {}, body, note ? el("div", { class: "tick__note", text: note }) : null));
 }
 
@@ -273,8 +322,13 @@ function lead(label, v) {
     el("div", { class: "lead__text" }, val(v)));
 }
 
-function sub(text) {
-  return el("div", { class: "sub", text });
+// sub — подзаголовок части раздела. Счёт стоит рядом с ним, а не под списком:
+// десять одинаковых строк не говорят, сколько их и сколько закрыто, пока не
+// пересчитаешь глазами.
+function sub(text, note) {
+  return el("div", { class: "sub" },
+    el("span", { text }),
+    note ? el("span", { class: "sub__note", text: note }) : null);
 }
 
 function drawPassport(p) {
@@ -302,7 +356,7 @@ function drawPassport(p) {
         : null);
   }));
 
-  return sec("1", "Паспорт задачи", null, rows, sub("Переносы срока"), list);
+  return sec("1", "Паспорт задачи", null, rows, sub("Переносы срока", p.shifts.length), list);
 }
 
 function drawGoal(g) {
@@ -315,14 +369,17 @@ function drawGoal(g) {
   // обе формулировки рядом.
   const kids = [lead("Как поставлено", g.asStated), lead("Что имелось в виду", g.clarified)];
 
+  // Счёт стоит у заголовка списка, а не под ним: семь одинаковых квадратиков
+  // подряд не говорят, сколько из них закрыто, пока их не пересчитаешь глазами.
+  // Само число приходит из шапки среза уже склонённым.
   if (g.criteria.length) {
-    kids.push(sub("Критерии приёмки"));
+    kids.push(sub("Критерии приёмки", g.criteriaText));
     kids.push(ticks(g.criteria.map(c =>
       tick(c.met ? "☑" : "☐", c.met,
-        el("span", { class: "tick__text", text: c.n + ". " + c.text }), c.note))));
+        el("span", { class: "tick__text", text: c.text }), c.note, c.n))));
   }
   if (g.outOfScope.length) {
-    kids.push(sub("Вне задачи"));
+    kids.push(sub("Вне задачи", g.outOfScope.length));
     kids.push(ticks(g.outOfScope.map(v => tick("—", false, val(v)))));
   }
   return sec("2", "Цель и границы", null, kids);
@@ -345,11 +402,11 @@ function drawStatus(st, share) {
         el("div", { class: m.done ? "step__pct step__pct--done" : "step__pct", text: m.progress })))));
   }
   if (st.done.length) {
-    kids.push(sub("Сделано"));
+    kids.push(sub("Сделано", st.done.length));
     kids.push(ticks(st.done.map(v => tick("✓", true, val(v)))));
   }
   if (st.left.length) {
-    kids.push(sub("Осталось"));
+    kids.push(sub("Осталось", st.left.length));
     kids.push(ticks(st.left.map(v => tick("·", false, val(v)))));
   }
   return sec("3", "Статус и план", null, kids);
@@ -372,7 +429,7 @@ function drawTrouble(sl) {
   }
 
   if (sl.risks.length) {
-    kids.push(sub("Риски"));
+    kids.push(sub("Риски", sl.risks.length));
     kids.push(el("ul", { class: "list" }, sl.risks.map(r =>
       el("li", { class: "card" },
         el("div", { class: "card__top" },
@@ -423,6 +480,9 @@ function drawArtifacts(list) {
 }
 
 function drawSlice(sl) {
+  // Сводки разделов приходят из шапки среза: там они уже посчитаны и склонены.
+  // Считать их второй раз здесь значило бы дать двум числам разойтись — ровно
+  // тому, ради чего весь слой представления и заведён на сервере.
   return el("div", {},
     drawPassport(sl.passport),
     drawGoal(sl.goal),
@@ -682,6 +742,9 @@ function ask(title, fields) {
     let input;
     if (f.kind === "text") {
       input = el("textarea", { id, required: f.required, placeholder: f.hint });
+      // Через свойство, а не через атрибут: у textarea начальный текст — это
+      // содержимое узла, и атрибут value на нём не значит ничего.
+      if (f.value) input.value = f.value;
     } else if (f.kind === "search") {
       // Поиск идёт на портале, а не по загруженному списку: задач там почти
       // десять тысяч, и нужная почти никогда не из последней сотни. Выгружать
@@ -980,11 +1043,43 @@ function drawVersions(list) {
           text: "сравнить с v" + prev.version,
           onclick: ev => compare(ev.currentTarget, prev.version, v.version, out),
         })
-        : null);
+        : null,
+      el("button", {
+        class: "btn btn--small btn--danger",
+        type: "button",
+        text: "удалить",
+        onclick: () => dropVersion(v.version, list.length === 1),
+      }));
     box.append(row);
   });
 
   return el("div", {}, box, out);
+}
+
+// dropVersion снимает версию среза.
+//
+// Спрашиваем подтверждение, потому что это единственное необратимое действие в
+// реестре: всё остальное только пополняется. Материал при этом остаётся —
+// источники и факты не трогаются, и срез собирается из них заново.
+async function dropVersion(version, last) {
+  const what = "Удалить версию v" + version + "?";
+  // Про деньги предупреждаем прямо: сняв единственную версию, задачу нельзя
+  // открыть, не собрав срез заново, а сборка — платный вызов модели.
+  const why = last
+    ? "Она единственная, и при следующем открытии задачи срез соберётся заново — " +
+      "это платный разбор. Источники и факты останутся на месте."
+    : "Текущей станет предыдущая версия. Источники и факты останутся: " +
+      "пропадёт только эта собранная картина.";
+  if (!window.confirm(what + "\n\n" + why)) return;
+
+  try {
+    await api("/api/tasks/" + encodeURIComponent(state.current) + "/slices/" + version, {
+      method: "DELETE",
+    });
+    await open(state.current);
+  } catch (e) {
+    flash(e.message);
+  }
 }
 
 // compare показывает различия между двумя версиями.

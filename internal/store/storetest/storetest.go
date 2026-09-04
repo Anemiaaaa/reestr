@@ -1220,6 +1220,42 @@ func testSliceVersions(t *testing.T, st store.Store) {
 	if !second.BuiltAt.Equal(utc(2026, time.August, 2)) {
 		t.Errorf("дата сборки версии 2 = %v", second.BuiltAt)
 	}
+
+	// Единственное изъятие в хранилище, которое иначе только пополняется: срез —
+	// не запись о событии, а собранная картина, и неудачная сборка ничего не
+	// свидетельствует.
+	if err := st.DeleteSlice(ctx, "aura", 2); err != nil {
+		t.Fatalf("DeleteSlice: %v", err)
+	}
+	if _, err := st.SliceVersion(ctx, "aura", 2); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("удалённая версия читается: %v", err)
+	}
+	if list, err := st.SliceVersions(ctx, "aura"); err != nil || len(list) != 2 {
+		t.Errorf("после удаления версий %d (%v)", len(list), err)
+	}
+
+	// Соседние версии на месте: удаляется одна названная, а не история.
+	if _, err := st.SliceVersion(ctx, "aura", 1); err != nil {
+		t.Errorf("версия 1 пропала вместе со второй: %v", err)
+	}
+	if latest, err := st.LatestSlice(ctx, "aura"); err != nil || latest.Version != 3 {
+		t.Errorf("последняя версия после удаления = %d (%v)", latest.Version, err)
+	}
+
+	// Удаление последней версии откатывает срез к предыдущей: именно ради этого
+	// удаление и нужно — снять неудачную сборку.
+	if err := st.DeleteSlice(ctx, "aura", 3); err != nil {
+		t.Fatalf("DeleteSlice последней версии: %v", err)
+	}
+	if latest, err := st.LatestSlice(ctx, "aura"); err != nil || latest.Version != 1 {
+		t.Errorf("после снятия последней версии текущая = %d (%v)", latest.Version, err)
+	}
+
+	// Несуществующая версия — ErrNotFound, а не тихий успех: иначе опечатка в
+	// номере выглядела бы как удавшееся удаление.
+	if err := st.DeleteSlice(ctx, "aura", 99); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("удаление несуществующей версии: ошибка %v, хотели ErrNotFound", err)
+	}
 }
 
 // testIncidents: журнал случаев, от которых руководитель отталкивается при

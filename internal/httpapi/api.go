@@ -55,6 +55,8 @@ func New(svc *service.Service, web fs.FS, log *slog.Logger, a *auth.Auth) *Serve
 	mux.HandleFunc("GET /api/tasks/{id}/board", s.board)
 	mux.HandleFunc("GET /api/tasks/{id}/slice", s.slice)
 	mux.HandleFunc("POST /api/tasks/{id}/slice/rebuild", s.rebuild)
+	mux.HandleFunc("POST /api/tasks/{id}/slice/correct", s.correct)
+	mux.HandleFunc("DELETE /api/tasks/{id}/slices/{version}", s.deleteVersion)
 	mux.HandleFunc("POST /api/tasks/{id}/pull", s.pull)
 	mux.HandleFunc("GET /api/tasks/{id}/slices", s.versions)
 	mux.HandleFunc("GET /api/tasks/{id}/slices/compare", s.compare)
@@ -627,6 +629,58 @@ func (s *Server) version(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, newSlice(sl, t, list, s.svc.Now()))
+}
+
+// correctRequest — правка одного поля среза.
+//
+// Автора здесь нет по той же причине, что и в записи журнала: подпись ставит
+// сервер из пропуска. Правка в срезе — это утверждение о задаче наравне с
+// цитатой из переписки, и чьё оно, выдумывать нельзя.
+type correctRequest struct {
+	Field string `json:"field"`
+	Text  string `json:"text"`
+}
+
+// correct записывает значение, названное человеком, и собирает с ним новую
+// версию среза.
+func (s *Server) correct(w http.ResponseWriter, r *http.Request) {
+	var req correctRequest
+	if err := readJSON(r, &req); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	ctx, id := r.Context(), r.PathValue("id")
+	sl, err := s.svc.Correct(ctx, id, req.Field, req.Text, s.viewer(r))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	t, err := s.svc.Task(ctx, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	list, err := s.svc.Sources(ctx, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newSlice(sl, t, list, s.svc.Now()))
+}
+
+// deleteVersion убирает версию среза.
+func (s *Server) deleteVersion(w http.ResponseWriter, r *http.Request) {
+	v, err := strconv.Atoi(r.PathValue("version"))
+	if err != nil {
+		s.fail(w, r, fmt.Errorf("номер версии %q: %w", r.PathValue("version"), service.ErrInvalid))
+		return
+	}
+	if err := s.svc.DeleteSliceVersion(r.Context(), r.PathValue("id"), v); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // compare отвечает, что изменилось между двумя версиями среза.

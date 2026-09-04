@@ -33,6 +33,8 @@ func mark(o domain.Origin) string {
 		return "∑"
 	case domain.OriginMissing:
 		return "?"
+	case domain.OriginStated:
+		return "✎"
 	}
 	return ""
 }
@@ -48,6 +50,14 @@ type value struct {
 	SourceTitle string `json:"sourceTitle,omitempty"`
 	Quote       string `json:"quote,omitempty"`
 	Note        string `json:"note,omitempty"`
+
+	// Field — адрес значения в срезе, если его можно поправить. Пусто у всего
+	// остального, и по этой пустоте интерфейс решает, показывать ли карандаш:
+	// список правимых полей один, и живёт он в домене, а не в двух местах.
+	Field string `json:"field,omitempty"`
+
+	// FieldLabel — подпись поля для формы правки. Оттуда же, из домена.
+	FieldLabel string `json:"fieldLabel,omitempty"`
 }
 
 // sources — справочник источников для подстановки названий.
@@ -84,6 +94,20 @@ func newValue(v domain.Value, srcs sources) value {
 		Quote:       v.Quote,
 		Note:        v.Note,
 	}
+}
+
+// editable помечает значение адресом правимого поля.
+//
+// Отдельная обёртка, а не параметр newValue: значений в срезе десятки, правимых
+// девять, и лишний аргумент у всех остальных вызовов означал бы «здесь тоже
+// можно было бы, просто не стали».
+func editable(v value, field string) value {
+	label, ok := domain.Correctable()[field]
+	if !ok {
+		return v
+	}
+	v.Field, v.FieldLabel = field, label
+	return v
 }
 
 func newValues(vs []domain.Value, srcs sources) []value {
@@ -285,10 +309,16 @@ type slice struct {
 	} `json:"passport"`
 
 	Goal struct {
-		AsStated   value       `json:"asStated"`
-		Clarified  value       `json:"clarified"`
-		Criteria   []criterion `json:"criteria"`
-		OutOfScope []value     `json:"outOfScope"`
+		AsStated  value       `json:"asStated"`
+		Clarified value       `json:"clarified"`
+		Criteria  []criterion `json:"criteria"`
+
+		// CriteriaText — счёт у подзаголовка списка: «1 из 7». Короче, чем та же
+		// сводка в шапке среза, и намеренно: над списком уже написано, что это
+		// критерии приёмки, и повторять это в счёте незачем.
+		CriteriaText string `json:"criteriaText,omitempty"`
+
+		OutOfScope []value `json:"outOfScope"`
 	} `json:"goal"`
 
 	Status struct {
@@ -323,19 +353,22 @@ func newSlice(sl domain.Slice, t domain.Task, list []domain.Source, now time.Tim
 
 	v.Head = newHead(sl, t, now)
 
-	v.Passport.Title = newValue(sl.Passport.Title, srcs)
-	v.Passport.Author = newValue(sl.Passport.Author, srcs)
-	v.Passport.Assignee = newValue(sl.Passport.Assignee, srcs)
-	v.Passport.OpenedAt = newValue(sl.Passport.OpenedAt, srcs)
-	v.Passport.Deadline = newValue(sl.Passport.Deadline, srcs)
+	v.Passport.Title = editable(newValue(sl.Passport.Title, srcs), "passport.title")
+	v.Passport.Author = editable(newValue(sl.Passport.Author, srcs), "passport.author")
+	v.Passport.Assignee = editable(newValue(sl.Passport.Assignee, srcs), "passport.assignee")
+	v.Passport.OpenedAt = editable(newValue(sl.Passport.OpenedAt, srcs), "passport.openedAt")
+	v.Passport.Deadline = editable(newValue(sl.Passport.Deadline, srcs), "passport.deadline")
 	v.Passport.Shifts = newShifts(sl.Passport.Shifts)
 
-	v.Goal.AsStated = newValue(sl.Goal.AsStated, srcs)
-	v.Goal.Clarified = newValue(sl.Goal.Clarified, srcs)
+	v.Goal.AsStated = editable(newValue(sl.Goal.AsStated, srcs), "goal.asStated")
+	v.Goal.Clarified = editable(newValue(sl.Goal.Clarified, srcs), "goal.clarified")
 	v.Goal.Criteria = newCriteria(sl.Goal.Criteria)
+	if cs := sl.Goal.Criteria; len(cs) > 0 {
+		v.Goal.CriteriaText = fmt.Sprintf("%d из %d", domain.MetCriteria(cs), len(cs))
+	}
 	v.Goal.OutOfScope = newValues(sl.Goal.OutOfScope, srcs)
 
-	v.Status.Stage = newValue(sl.Status.Stage, srcs)
+	v.Status.Stage = editable(newValue(sl.Status.Stage, srcs), "status.stage")
 	v.Status.Readiness = newValue(sl.Status.Readiness, srcs)
 	v.Status.Milestones = newMilestones(sl.Status.Milestones, now)
 	v.Status.Done = newValues(sl.Status.Done, srcs)
@@ -345,7 +378,7 @@ func newSlice(sl domain.Slice, t domain.Task, list []domain.Source, now time.Tim
 	v.Risks = newRisks(sl.Risks, srcs)
 
 	v.PMActions.Needed = newActions(sl.PMActions.Needed)
-	v.PMActions.NextCheck = newValue(sl.PMActions.NextCheck, srcs)
+	v.PMActions.NextCheck = editable(newValue(sl.PMActions.NextCheck, srcs), "pmActions.nextCheck")
 	v.PMActions.Comment = sl.PMActions.Comment
 
 	v.Questions = newQuestions(sl.Questions, srcs)

@@ -572,6 +572,22 @@ func (s *Store) SliceVersions(_ context.Context, taskID string) ([]domain.SliceR
 	return out, nil
 }
 
+// DeleteSlice убирает версию среза. Связь slice_sources здесь отдельной
+// таблицей не живёт — источники лежат полем самого среза, — так что удалять
+// нечего, кроме строки.
+func (s *Store) DeleteSlice(_ context.Context, taskID string, version int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, sl := range s.st.Slices {
+		if sl.TaskID == taskID && sl.Version == version {
+			s.st.Slices = append(s.st.Slices[:i], s.st.Slices[i+1:]...)
+			return s.persist()
+		}
+	}
+	return fmt.Errorf("срез %s версии %d: %w", taskID, version, store.ErrNotFound)
+}
+
 // --- журнал инцидентов ---
 
 func (s *Store) AddIncident(ctx context.Context, in domain.Incident) error {

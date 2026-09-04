@@ -216,3 +216,90 @@ func (s Slice) Gaps() int {
 	n += len(s.MissingArtifacts())
 	return n
 }
+
+// --- правка среза человеком ---
+
+// Correctable перечисляет поля среза, которые человек может назвать сам, и
+// подписи к ним для формы правки.
+//
+// Список закрытый, и это главное в нём. Открытый адрес поля означал бы, что в
+// срез можно вписать что угодно куда угодно, и «поле» перестало бы значить
+// «место, за которое кто-то отвечает».
+//
+// Сюда попали только одиночные значения с устойчивым адресом. Списки — сделано,
+// осталось, критерии, блокеры — не попали намеренно: у их элементов нет
+// адреса, который переживёт пересборку, и правка «третьего пункта» после
+// разбора относилась бы уже к другому пункту.
+//
+// Готовности здесь тоже нет. Она не приходит ниоткуда, а считается по этапам, и
+// правка превратила бы её в число, которое ничем не объясняется. Если этапы
+// говорят не то, править надо этапы.
+func Correctable() map[string]string {
+	return map[string]string{
+		"passport.title":      "Название",
+		"passport.author":     "Автор постановки",
+		"passport.assignee":   "Исполнитель",
+		"passport.openedAt":   "Поставлена",
+		"passport.deadline":   "Срок",
+		"goal.asStated":       "Цель: как поставлено",
+		"goal.clarified":      "Цель: что имелось в виду",
+		"status.stage":        "Этап",
+		"pmActions.nextCheck": "Следующая проверка",
+	}
+}
+
+// Field возвращает значение среза по адресу поля.
+func (s Slice) Field(field string) (Value, bool) {
+	switch field {
+	case "passport.title":
+		return s.Passport.Title, true
+	case "passport.author":
+		return s.Passport.Author, true
+	case "passport.assignee":
+		return s.Passport.Assignee, true
+	case "passport.openedAt":
+		return s.Passport.OpenedAt, true
+	case "passport.deadline":
+		return s.Passport.Deadline, true
+	case "goal.asStated":
+		return s.Goal.AsStated, true
+	case "goal.clarified":
+		return s.Goal.Clarified, true
+	case "status.stage":
+		return s.Status.Stage, true
+	case "pmActions.nextCheck":
+		return s.PMActions.NextCheck, true
+	}
+	return Value{}, false
+}
+
+// SetField кладёт значение в срез по адресу поля.
+//
+// Разбор адреса написан переключателем, а не отражением по тегам JSON. Отражение
+// приняло бы любой адрес, какой пришёл снаружи, и список правимых полей
+// перестал бы быть списком: он бы совпал со структурой среза целиком.
+func (s *Slice) SetField(field string, v Value) bool {
+	switch field {
+	case "passport.title":
+		s.Passport.Title = v
+	case "passport.author":
+		s.Passport.Author = v
+	case "passport.assignee":
+		s.Passport.Assignee = v
+	case "passport.openedAt":
+		s.Passport.OpenedAt = v
+	case "passport.deadline":
+		s.Passport.Deadline = v
+	case "goal.asStated":
+		s.Goal.AsStated = v
+	case "goal.clarified":
+		s.Goal.Clarified = v
+	case "status.stage":
+		s.Status.Stage = v
+	case "pmActions.nextCheck":
+		s.PMActions.NextCheck = v
+	default:
+		return false
+	}
+	return true
+}
