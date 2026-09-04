@@ -68,6 +68,7 @@ const state = {
   current: "",
   board: null,
   tab: "slice",
+  journalTab: "rows",
 };
 
 // --- значение с происхождением ---
@@ -596,23 +597,34 @@ function render() {
     ["facts", "Факты", b.facts, () => drawFacts(b.task.id)],
   ];
 
+  page.append(...tabbed(panels, "slice", "tab"));
+  $("#main").replaceChildren(page);
+}
+
+// tabbed собирает ряд вкладок и тело под ним.
+//
+// Панели — [ключ, подпись, число у подписи, построить]. Построить может вернуть
+// и обещание: журнал фактов запрашивается отдельно, он нужен редко и тащить его
+// с каждым открытием задачи незачем.
+//
+// Ключ выбранной вкладки живёт в state под именем slot, а не внутри этой
+// функции: иначе после пересборки среза страница возвращалась бы на первую
+// вкладку, хотя человек смотрел третью.
+function tabbed(panels, fallback, slot) {
   const tabs = el("div", { class: "tabs", role: "tablist" });
   const body = el("div", {});
-  page.append(tabs, body);
 
   const show = key => {
-    state.tab = key;
+    state[slot] = key;
     for (const btn of tabs.children) {
       btn.setAttribute("aria-selected", String(btn.dataset.tab === key));
     }
-    const build = panels.find(p => p[0] === key)[3];
-    const out = build();
-    // Журнал фактов запрашивается отдельно: он нужен редко и незачем тащить его
-    // вместе с каждым открытием задачи.
+    const out = panels.find(p => p[0] === key)[3]();
     if (out instanceof Promise) {
       body.replaceChildren(el("div", { class: "empty", text: "Загрузка…" }));
       out.then(node => {
-        if (state.tab === key) body.replaceChildren(node);
+        // Пока ждали, могли уйти на другую вкладку — тогда ответ уже не к месту.
+        if (state[slot] === key) body.replaceChildren(node);
       }).catch(e => body.replaceChildren(el("div", { class: "err", text: e.message })));
       return;
     }
@@ -625,13 +637,12 @@ function render() {
       type: "button",
       role: "tab",
       "data-tab": key,
-      "aria-selected": String(key === state.tab),
       onclick: () => show(key),
     }, label, count ? el("span", { class: "tab__n", text: count }) : null));
   }
 
-  $("#main").replaceChildren(page);
-  show(panels.some(p => p[0] === state.tab) ? state.tab : "slice");
+  show(panels.some(p => p[0] === state[slot]) ? state[slot] : fallback);
+  return [tabs, body];
 }
 
 function flash(text, cls = "err") {
@@ -1067,8 +1078,39 @@ function renderJournal() {
     return;
   }
 
-  page.append(journalTable(j.incidents));
+  page.append(...tabbed([
+    ["rows", "Записи", j.incidents.length, () => journalTable(j.incidents)],
+    ["blocks", "По блокам KPI", null, () => journalBlocks(j)],
+  ], "rows", "journalTab"));
   $("#main").replaceChildren(page);
+}
+
+// journalBlocks показывает, где случаи накопились.
+//
+// Ради этого журнал и ведут: одна запись — повод для разговора, десять по
+// одному блоку — повод менять работу. Читая записи подряд, этого не увидеть:
+// они лежат по дням, а вопрос стоит по блокам.
+function journalBlocks(j) {
+  const box = el("div", { class: "blocks" });
+  if (j.statsText) box.append(el("div", { class: "blocks__lead", text: j.statsText }));
+
+  // people у пустого блока сервер не присылает вовсе: перечислять некого.
+  for (const s of j.stats) {
+    const people = s.people || [];
+    // Отведённые случаи названы отдельной строкой, а не вычтены молча: решение
+    // по блоку принимают по числу зачтённых, а объясняют отведёнными.
+    const counts = [s.countText];
+    if (s.external) counts.push("в оценку идёт " + s.counted + ", вне зоны контроля " + s.external);
+
+    box.append(el("div", { class: s.note ? "kpi kpi--empty" : "kpi" },
+      el("div", { class: "kpi__head" },
+        el("span", { class: "kpi__title", text: s.label }),
+        el("span", { class: "kpi__weight", text: "вес " + s.weightText }),
+        el("span", { class: s.note ? "kpi__count miss" : "kpi__count", text: s.note || counts.join(" · ") })),
+      bar(s.share),
+      people.length ? el("div", { class: "kpi__people", text: people.join(" · ") }) : null));
+  }
+  return box;
 }
 
 // journalTable рисует журнал таблицей — той же, что руководитель вёл в

@@ -12,6 +12,7 @@ package httpapi
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/Anemiaaaa/reestr/internal/bitrix"
@@ -899,19 +900,61 @@ func newKPIBlocks() []kpiBlock {
 	return out
 }
 
+// blockStat — сколько случаев накопилось по блоку KPI.
+//
+// Ради этого журнал и ведут: одна запись — повод для разговора, а десять по
+// одному блоку — повод менять работу. Увидеть это, читая записи подряд,
+// нельзя: они лежат по дням, а вопрос стоит по блокам.
+type blockStat struct {
+	Block      string `json:"block"`
+	Label      string `json:"label"`
+	WeightText string `json:"weightText"`
+
+	// CountText — сколько случаев по блоку, уже со склонением. Счёт идёт по
+	// всем записям: внешняя помеха в оценку не идёт, но из журнала не исчезает.
+	CountText string `json:"countText"`
+
+	// Counted — сколько из них идут в оценку, External — сколько отведено как
+	// внешняя помеха. Разделены, потому что решение по блоку принимают по
+	// первому числу, а объясняют вторым.
+	Counted  int `json:"counted"`
+	External int `json:"external"`
+
+	// Share — доля от самого нагруженного блока, для ширины полосы. Не доля от
+	// всех случаев: сравнивают блоки между собой, а не с общим числом.
+	Share float64 `json:"share"`
+
+	// People — кто и сколько раз попал в блок, крупные первыми.
+	People []string `json:"people,omitempty"`
+
+	// Note объясняет пустой блок. Пустой блок — тоже ответ: по нему претензий
+	// нет, и это стоит сказать словами, а не оставлять прочерк.
+	Note string `json:"note,omitempty"`
+}
+
 // journal — ответ журнала целиком.
 type journal struct {
-	Incidents []incident `json:"incidents"`
-	Blocks    []kpiBlock `json:"blocks"`
+	Incidents []incident  `json:"incidents"`
+	Blocks    []kpiBlock  `json:"blocks"`
+	Stats     []blockStat `json:"stats"`
 
 	// Text — сводка одной строкой. Считается здесь, а не в браузере: правило
 	// «внешняя помеха в оценку не идёт» одно, и применять его в двух местах
 	// значило бы дать ему разойтись.
 	Text string `json:"text"`
+
+	// StatsText называет самый нагруженный блок словами. Полосы показывают
+	// соотношение, но вывод из них человек делает сам, а вывод здесь ровно
+	// один, и сказать его короче, чем прочитать по полосам.
+	StatsText string `json:"statsText"`
 }
 
 func newJournal(list []domain.Incident, titles map[string]string) journal {
-	j := journal{Incidents: newIncidents(list, titles), Blocks: newKPIBlocks()}
+	j := journal{
+		Incidents: newIncidents(list, titles),
+		Blocks:    newKPIBlocks(),
+		Stats:     newBlockStats(list),
+	}
 
 	counted := 0
 	for _, in := range list {
@@ -928,5 +971,113 @@ func newJournal(list []domain.Incident, titles map[string]string) journal {
 		j.Text = fmt.Sprintf("%s, из них %d вне зоны контроля",
 			ru.Count(len(list), "случай", "случая", "случаев"), len(list)-counted)
 	}
+
+	// Вывод называется только когда он есть. При равном счёте у двух блоков
+	// «больше всего проблем» — неправда, и молчание тут честнее.
+	if len(j.Stats) > 0 && j.Stats[0].Counted > 0 {
+		if len(j.Stats) == 1 || j.Stats[1].Counted < j.Stats[0].Counted {
+			j.StatsText = "больше всего в оценку идёт по блоку «" + j.Stats[0].Label + "»"
+		} else {
+			j.StatsText = "ни один блок не выделяется: случаи распределены поровну"
+		}
+	}
 	return j
+}
+
+// newBlockStats считает случаи по блокам KPI.
+//
+// Блоки перечисляются все четыре, даже пустые: пустой блок — тоже ответ, по
+// нему претензий нет, и на глаз это видно только когда он стоит в ряду.
+func newBlockStats(list []domain.Incident) []blockStat {
+	type tally struct {
+		all, counted, external int
+		people                 map[string]int
+	}
+
+	byBlock := make(map[domain.KPIBlock]*tally, len(domain.KPIBlocks()))
+	for _, b := range domain.KPIBlocks() {
+		byBlock[b] = &tally{people: map[string]int{}}
+	}
+	for _, in := range list {
+		t, ok := byBlock[in.Block]
+		if !ok {
+			// Блок вне закрытого списка — запись из будущей версии схемы. В
+			// сводку она не идёт, но и молча числа не портит.
+			continue
+		}
+		t.all++
+		if in.Countable() {
+			t.counted++
+		} else {
+			t.external++
+		}
+		t.people[in.Employee]++
+	}
+
+	// Полосы меряются от самого нагруженного блока: сравнивают блоки между
+	// собой, а не с общим числом случаев.
+	top := 0
+	for _, t := range byBlock {
+		if t.counted > top {
+			top = t.counted
+		}
+	}
+
+	out := make([]blockStat, 0, len(byBlock))
+	for _, b := range domain.KPIBlocks() {
+		t := byBlock[b]
+		s := blockStat{
+			Block:      string(b),
+			Label:      b.Label(),
+			WeightText: fmt.Sprintf("%.0f%%", b.Weight()*100),
+			CountText:  ru.Count(t.all, "случай", "случая", "случаев"),
+			Counted:    t.counted,
+			External:   t.external,
+		}
+		if top > 0 {
+			s.Share = float64(t.counted) / float64(top)
+		}
+		if t.all == 0 {
+			s.Note = "претензий нет"
+		}
+		s.People = topPeople(t.people)
+		out = append(out, s)
+	}
+
+	// Нагруженные первыми — вопрос стоит «где больше всего». При равном счёте
+	// порядок остаётся тем, в каком блоки идут в системе оплаты: вес там убывает,
+	// и из двух равных блоков выше окажется более весомый.
+	sort.SliceStable(out, func(i, k int) bool {
+		if out[i].Counted != out[k].Counted {
+			return out[i].Counted > out[k].Counted
+		}
+		return out[i].External > out[k].External
+	})
+	return out
+}
+
+// topPeople раскладывает счёт по людям, крупные первыми.
+func topPeople(counts map[string]int) []string {
+	if len(counts) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(counts))
+	for name := range counts {
+		names = append(names, name)
+	}
+	// Сортировка по имени вторым ключом нужна не для красоты: без неё порядок
+	// равных берётся из обхода карты, а он в Go случаен — сводка меняла бы вид
+	// на каждом обновлении страницы.
+	sort.Slice(names, func(i, k int) bool {
+		if counts[names[i]] != counts[names[k]] {
+			return counts[names[i]] > counts[names[k]]
+		}
+		return names[i] < names[k]
+	})
+
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		out = append(out, fmt.Sprintf("%s — %d", name, counts[name]))
+	}
+	return out
 }
