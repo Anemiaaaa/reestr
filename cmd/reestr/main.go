@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -281,8 +282,22 @@ func rebuilder(svc *service.Service, log *slog.Logger) (*service.Rebuilder, erro
 		return nil, fmt.Errorf("REESTR_TZ=%q: %w", name, err)
 	}
 
-	log.Info("ночная пересборка включена", "время", at, "пояс", name)
-	return service.NewRebuilder(svc, t.Hour(), t.Minute(), loc), nil
+	// Предел разборов за ночь. Десять по умолчанию, а не «сколько получится»:
+	// разбор платный, и ночь, когда материал появился разом у всех задач,
+	// списала бы весь остаток. Ноль означает «без предела» — осознанный выбор
+	// того, кто настраивает, а не молчаливое умолчание.
+	limit := 10
+	if raw := strings.TrimSpace(config.Env("REESTR_NIGHTLY_LIMIT", "")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("REESTR_NIGHTLY_LIMIT=%q: нужно число", raw)
+		}
+		limit = n
+	}
+
+	log.Info("ночная пересборка включена",
+		"время", at, "пояс", name, "предел разборов за ночь", limit)
+	return service.NewRebuilder(svc, t.Hour(), t.Minute(), loc, limit), nil
 }
 
 // logins собирает вход из настройки REESTR_USERS вида «логин:пароль,логин:пароль».
@@ -310,7 +325,18 @@ func logins(log *slog.Logger, addr string) (*auth.Auth, error) {
 	if err != nil {
 		return nil, fmt.Errorf("REESTR_USERS: %w", err)
 	}
+	if err := a.Managers(config.Env("REESTR_MANAGERS", "")); err != nil {
+		return nil, fmt.Errorf("REESTR_MANAGERS: %w", err)
+	}
 	log.Info("вход включён", "пользователи", strings.Join(a.Logins(), ", "))
+
+	// О неразделённых ролях говорим вслух: в журнале инцидентов лежат записи о
+	// работе конкретных людей, и «его видят все» человек должен узнать от
+	// сервера, а не обнаружить, когда сотрудник прочитает про себя.
+	if !a.ManagersSet() {
+		log.Warn("REESTR_MANAGERS не задан: журнал инцидентов видят все, кто вошёл",
+			"подсказка", "REESTR_MANAGERS=логин — оставить журнал одному руководителю")
+	}
 
 	// Пароль, совпадающий с логином, подбирается первой же попыткой. Об этом
 	// говорим при каждом запуске, а не один раз в документации: настройка, о

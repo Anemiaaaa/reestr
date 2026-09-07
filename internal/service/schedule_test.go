@@ -29,7 +29,7 @@ func TestUntilNextRun(t *testing.T) {
 	t.Parallel()
 
 	loc := msk(t)
-	r := NewRebuilder(nil, 20, 0, loc)
+	r := NewRebuilder(nil, 20, 0, loc, 0)
 
 	cases := []struct {
 		name string
@@ -85,7 +85,7 @@ func TestRunOnceSkipsUnchanged(t *testing.T) {
 	s := seeded(t)
 	ctx := context.Background()
 
-	r := NewRebuilder(s, 20, 0, time.UTC)
+	r := NewRebuilder(s, 20, 0, time.UTC, 0)
 
 	// Первый проход собирает: срезов ещё нет.
 	r.RunOnce(ctx)
@@ -134,11 +134,58 @@ func TestRunOnceKeepsGoing(t *testing.T) {
 		t.Fatalf("создать задачу: %v", err)
 	}
 
-	NewRebuilder(s, 20, 0, time.UTC).RunOnce(ctx)
+	NewRebuilder(s, 20, 0, time.UTC, 0).RunOnce(ctx)
 
 	// Задача с материалом собралась, несмотря на соседку.
 	if _, err := s.store.LatestSlice(ctx, manual.TaskID); err != nil {
 		t.Errorf("срез задачи с материалом не собран: %v", err)
+	}
+}
+
+// TestRunOnceHonoursLimit: предел разборов за ночь. Разбор платный, и ночь,
+// когда материал появился разом у всех задач, без предела списала бы весь
+// остаток — а узнали бы об этом утром.
+func TestRunOnceHonoursLimit(t *testing.T) {
+	s := seeded(t)
+	ctx := context.Background()
+
+	// Три задачи с материалом: столько же разборов и потребовалось бы.
+	for _, id := range []string{"вторая", "третья"} {
+		if _, err := s.CreateTask(ctx, domain.Task{ID: id, Title: id}); err != nil {
+			t.Fatalf("создать задачу %s: %v", id, err)
+		}
+		if _, err := s.AddSource(ctx, domain.Source{
+			TaskID: id, Kind: domain.KindNote, Title: "Заметка", Body: "материал",
+		}); err != nil {
+			t.Fatalf("добавить источник в %s: %v", id, err)
+		}
+	}
+
+	NewRebuilder(s, 20, 0, time.UTC, 1).RunOnce(ctx)
+
+	// Собран ровно один срез: предел считается по разобранным задачам.
+	built := 0
+	for _, id := range []string{manual.TaskID, "вторая", "третья"} {
+		if _, err := s.store.LatestSlice(ctx, id); err == nil {
+			built++
+		}
+	}
+	if built != 1 {
+		t.Errorf("собрано срезов %d, предел разрешал 1", built)
+	}
+
+	// Следующая ночь доберёт остальное: предел откладывает разбор, а не
+	// отменяет его.
+	NewRebuilder(s, 20, 0, time.UTC, 1).RunOnce(ctx)
+
+	built = 0
+	for _, id := range []string{manual.TaskID, "вторая", "третья"} {
+		if _, err := s.store.LatestSlice(ctx, id); err == nil {
+			built++
+		}
+	}
+	if built != 2 {
+		t.Errorf("после второй ночи собрано %d, ожидали 2", built)
 	}
 }
 
@@ -150,7 +197,7 @@ func TestRunOnceStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	NewRebuilder(s, 20, 0, time.UTC).RunOnce(ctx)
+	NewRebuilder(s, 20, 0, time.UTC, 0).RunOnce(ctx)
 
 	if _, err := s.store.LatestSlice(context.Background(), manual.TaskID); err == nil {
 		t.Error("отменённый проход всё равно собрал срез")

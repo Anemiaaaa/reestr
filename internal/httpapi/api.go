@@ -741,6 +741,11 @@ type incidentRequest struct {
 // отдельный запрос за ним означал бы, что форму нельзя показать, пока не
 // ответили два раза.
 func (s *Server) incidents(w http.ResponseWriter, r *http.Request) {
+	if !s.manager(r) {
+		s.forbid(w, r)
+		return
+	}
+
 	ctx := r.Context()
 	list, err := s.svc.Incidents(ctx, strings.TrimSpace(r.URL.Query().Get("task")))
 	if err != nil {
@@ -762,6 +767,11 @@ func (s *Server) incidents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) addIncident(w http.ResponseWriter, r *http.Request) {
+	if !s.manager(r) {
+		s.forbid(w, r)
+		return
+	}
+
 	var req incidentRequest
 	if err := readJSON(r, &req); err != nil {
 		s.fail(w, r, err)
@@ -861,8 +871,33 @@ func (s *Server) viewer(r *http.Request) string {
 	return login
 }
 
-// who сообщает, кто вошёл. Нужен интерфейсу, чтобы показать имя и кнопку
-// выхода.
+// manager отвечает, руководитель ли вошедший.
+//
+// Без настроенного входа — да. Это локальный запуск на петле, где за
+// компьютером сидит один человек, и прятать от него журнал не от кого.
+func (s *Server) manager(r *http.Request) bool {
+	if s.auth == nil {
+		return true
+	}
+	return s.auth.Manager(s.viewer(r))
+}
+
+// forbid отказывает в доступе к журналу.
+//
+// Отдельным ответом, а не 404: делать вид, что журнала не существует, значит
+// оставить человека гадать, сломалось у него что-то или так задумано.
+func (s *Server) forbid(w http.ResponseWriter, r *http.Request) {
+	s.log.Warn("отказ в доступе к журналу", "кто", s.viewer(r), "путь", r.URL.Path)
+	writeJSON(w, http.StatusForbidden, map[string]string{
+		"error": "журнал инцидентов доступен только руководителю",
+	})
+}
+
+// who сообщает, кто вошёл и что ему видно. Нужен интерфейсу, чтобы показать имя,
+// кнопку выхода и решить, рисовать ли журнал.
 func (s *Server) who(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"login": s.viewer(r)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"login":   s.viewer(r),
+		"manager": s.manager(r),
+	})
 }
