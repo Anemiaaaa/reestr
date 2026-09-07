@@ -55,6 +55,7 @@ func New(svc *service.Service, web fs.FS, log *slog.Logger, a *auth.Auth) *Serve
 	mux.HandleFunc("GET /api/tasks", s.tasks)
 	mux.HandleFunc("POST /api/tasks", s.createTask)
 	mux.HandleFunc("GET /api/tasks/{id}", s.task)
+	mux.HandleFunc("DELETE /api/tasks/{id}", s.deleteTask)
 	mux.HandleFunc("GET /api/tasks/{id}/board", s.board)
 	mux.HandleFunc("GET /api/tasks/{id}/slice", s.slice)
 	mux.HandleFunc("GET /api/tasks/{id}/slice.md", s.sliceText)
@@ -296,6 +297,25 @@ type board struct {
 	// список короткий, а лишний поход в браузере — лишний повод показать
 	// страницу наполовину собранной.
 	Versions []sliceRef `json:"versions"`
+
+	// BuildError — почему срез не собрался. Пусто, когда всё в порядке.
+	//
+	// Строкой на странице, а не отказом всей страницы: до задачи со сломавшимся
+	// разбором надо уметь добраться — посмотреть источники, снять чат, удалить
+	// заведённую по ошибке.
+	BuildError string `json:"buildError,omitempty"`
+}
+
+// deleteTask убирает задачу со всем, что к ней относится.
+//
+// Записи журнала инцидентов остаются: случай относится к человеку и дню, а
+// задача в нём — место, где это произошло.
+func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteTask(r.Context(), r.PathValue("id")); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) board(w http.ResponseWriter, r *http.Request) {
@@ -306,10 +326,25 @@ func (s *Server) board(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	// Отказ разбора страницу не отменяет.
+	//
+	// Открытие задачи запускает первую сборку, и, если модель не ответила,
+	// страница падала целиком: задачу нельзя было ни посмотреть, ни поправить,
+	// ни удалить — она запиралась чужим сбоем. А добраться до неё надо именно
+	// тогда: посмотреть источники, снять чат, удалить заведённую по ошибке.
+	//
+	// Поэтому вместо среза показывается пустой, а причина — строкой на самой
+	// странице. Молчаливая подмена была бы хуже отказа: человек прочитал бы
+	// пробелы как разбор, ничего не нашедший в источниках.
+	var buildErr string
 	sl, err := s.svc.Slice(ctx, id)
-	if err != nil {
-		s.fail(w, r, err)
-		return
+	if err != nil && !errors.Is(err, service.ErrNoChanges) {
+		s.log.Warn("срез не собран, задача открыта без него", "задача", id, "ошибка", err)
+		buildErr = err.Error()
+		if sl, err = s.svc.BlankSlice(ctx, id); err != nil {
+			s.fail(w, r, err)
+			return
+		}
 	}
 	list, err := s.svc.Sources(ctx, id)
 	if err != nil {
@@ -351,7 +386,8 @@ func (s *Server) board(w http.ResponseWriter, r *http.Request) {
 		Sources:  make([]source, 0, len(list)),
 		Chats:    newLinks(links),
 		Facts:    len(facts),
-		Versions: newSliceRefs(versions),
+		Versions:   newSliceRefs(versions),
+		BuildError: buildErr,
 	}
 	for _, src := range list {
 		out.Sources = append(out.Sources, newSource(src, false))

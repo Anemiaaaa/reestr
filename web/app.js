@@ -1028,6 +1028,15 @@ function render() {
   const main = el("div", { class: "col" },
     el("div", { class: "crumb", text: b.task.project }),
     el("h1", { text: b.slice.head.title }),
+    // Сбой разбора — строкой на самой странице, а не отказом всей страницы.
+    // Иначе до задачи со сломавшимся разбором не добраться, а добраться надо
+    // именно тогда: посмотреть источники, снять чат, удалить лишнюю.
+    b.buildError
+      ? el("div", { class: "err" },
+        el("div", { text: "Срез не собран: " + b.buildError }),
+        el("div", { class: "crumb", text: "Ниже — задача без среза. Попробуйте пересобрать: " +
+          "отказ шлюза бывает временным." }))
+      : null,
     drawChats(b.chats),
     ...tabbed(panels, "slice", "tab"));
 
@@ -1094,11 +1103,21 @@ function drawRail(b) {
     // Удаление стоит здесь, а не в глубине вкладки «Версии», где его никто не
     // находил. Оно необратимое, поэтому отделено чертой и набрано красным.
     el("div", { class: "rail__sep" }),
+    // Версии нулевой не бывает: ноль означает, что срез не собран вовсе, и
+    // удалять нечего.
+    h.version > 0
+      ? el("button", {
+        class: "btn btn--wide btn--danger",
+        type: "button",
+        text: "Удалить версию v" + h.version,
+        onclick: () => dropVersion(h.version, b.versions.length === 1),
+      })
+      : null,
     el("button", {
       class: "btn btn--wide btn--danger",
       type: "button",
-      text: "Удалить версию v" + h.version,
-      onclick: () => dropVersion(h.version, b.versions.length === 1),
+      text: "Удалить задачу",
+      onclick: () => dropTask(b.task),
     }),
     b.slice.editedFields.length
       ? el("button", {
@@ -1538,6 +1557,31 @@ async function copySlice(btn) {
     flash(e.message);
   } finally {
     btn.disabled = false;
+  }
+}
+
+// dropTask убирает задачу целиком.
+//
+// Единственное место, где реестр расстаётся с материалом, поэтому и спрашиваем
+// подробно: что именно уйдёт и что останется. «Вы уверены?» тут не годится —
+// человек уверен, он просто не знает, чего лишится.
+async function dropTask(t) {
+  const what = "Удалить задачу «" + t.title + "»?";
+  const why = "Уйдут её источники, факты, схемы, все версии среза и правки. " +
+    "Останутся записи журнала инцидентов — случай относится к человеку и дню, " +
+    "а задача в нём только место.\n\nОтменить это будет нельзя.";
+  if (!window.confirm(what + "\n\n" + why)) return;
+
+  try {
+    await api("/api/tasks/" + encodeURIComponent(t.id), { method: "DELETE" });
+    // Возвращаемся к списку: страницы удалённой задачи больше нет, и оставить
+    // её на экране значило бы показывать то, чего в реестре уже не существует.
+    state.current = "";
+    state.board = null;
+    location.hash = "";
+    await boot();
+  } catch (e) {
+    flash(e.message);
   }
 }
 

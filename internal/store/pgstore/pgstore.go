@@ -171,6 +171,49 @@ func (s *Store) Tasks(ctx context.Context) ([]domain.Task, error) {
 	return out, rows.Err()
 }
 
+// DeleteTask убирает задачу и всё, что на неё ссылается.
+//
+// Одной транзакцией: наполовину удалённая задача — это задача без срезов, но с
+// фактами, и увидели бы её только по странному поведению разбора.
+//
+// Порядок продиктован внешними ключами. Указатели slice_sources уходят каскадом
+// вместе со срезами, у источников внешнего ключа нет вовсе, но чистить их надо
+// так же: без задачи они уже ничьи.
+func (s *Store) DeleteTask(ctx context.Context, id string) error {
+	if _, err := s.Task(ctx, id); err != nil {
+		return err
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("удаление задачи %s: %w", id, err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // после Commit откат — не ошибка
+
+	// Случай журнала переживает задачу: он относится к человеку и дню, а задача
+	// в нём — место, где это произошло. Название проекта в записи остаётся.
+	steps := []string{
+		`UPDATE incidents SET task_id = NULL WHERE task_id = $1`,
+		`DELETE FROM slices WHERE task_id = $1`,
+		`DELETE FROM facts WHERE task_id = $1`,
+		`DELETE FROM processes WHERE task_id = $1`,
+		`DELETE FROM corrections WHERE task_id = $1`,
+		`DELETE FROM chat_links WHERE task_id = $1`,
+		`DELETE FROM sources WHERE task_id = $1`,
+		`DELETE FROM tasks WHERE id = $1`,
+	}
+	for _, q := range steps {
+		if _, err := tx.Exec(ctx, q, id); err != nil {
+			return fmt.Errorf("удаление задачи %s: %w", id, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("удаление задачи %s: %w", id, err)
+	}
+	return nil
+}
+
 // --- закреплённые чаты ---
 
 const chatLinkCols = `task_id, system, dialog_id, title, kind, external_task_id, last_message_id, last_sync_at, linked_at`

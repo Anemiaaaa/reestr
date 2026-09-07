@@ -171,6 +171,49 @@ func (s *Store) Tasks(_ context.Context) ([]domain.Task, error) {
 	return out, nil
 }
 
+// DeleteTask убирает задачу и всё, что на неё ссылается.
+//
+// Случаи журнала переживают задачу: случай относится к человеку и дню, а задача
+// в нём — место, где это произошло. Перенесённые сообщения тоже остаются, они
+// принадлежат чату.
+func (s *Store) DeleteTask(ctx context.Context, id string) error {
+	if _, err := s.Task(ctx, id); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.st.Tasks = keep(s.st.Tasks, func(t domain.Task) bool { return t.ID != id })
+	s.st.ChatLinks = keep(s.st.ChatLinks, func(l domain.ChatLink) bool { return l.TaskID != id })
+	s.st.Sources = keep(s.st.Sources, func(v domain.Source) bool { return v.TaskID != id })
+	s.st.Facts = keep(s.st.Facts, func(f domain.Fact) bool { return f.TaskID != id })
+	s.st.Processes = keep(s.st.Processes, func(p domain.Process) bool { return p.TaskID != id })
+	s.st.Slices = keep(s.st.Slices, func(sl domain.Slice) bool { return sl.TaskID != id })
+	s.st.Corrections = keep(s.st.Corrections, func(c domain.Correction) bool { return c.TaskID != id })
+
+	for i, in := range s.st.Incidents {
+		if in.TaskID == id {
+			s.st.Incidents[i].TaskID = ""
+		}
+	}
+	return s.persist()
+}
+
+// keep оставляет элементы, для которых условие истинно.
+//
+// Отдельная функция, потому что удаление задачи чистит семь списков подряд, и
+// семь одинаковых циклов рядом читались бы как семь разных правил.
+func keep[T any](list []T, ok func(T) bool) []T {
+	out := list[:0]
+	for _, v := range list {
+		if ok(v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // LinkChat закрепляет за задачей чат внешней системы. Повторное закрепление
 // того же чата обновляет только подпись.
 func (s *Store) LinkChat(ctx context.Context, link domain.ChatLink) error {

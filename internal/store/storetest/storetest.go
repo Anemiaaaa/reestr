@@ -59,6 +59,7 @@ func Run(t *testing.T, open New) {
 		{"Slices", testSlices},
 		{"SlicesUsing", testSlicesUsing},
 		{"SliceVersions", testSliceVersions},
+		{"DeleteTask", testDeleteTask},
 		{"Corrections", testCorrections},
 		{"Incidents", testIncidents},
 		{"DuplicateSource", testDuplicateSource},
@@ -1585,6 +1586,113 @@ func testIncidents(t *testing.T, st store.Store) {
 		t.Errorf("после удаления случаев %d, хотели 3", len(list))
 	}
 	if err := st.DeleteIncident(ctx, "i-4"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("повторное удаление: ошибка %v, хотели ErrNotFound", err)
+	}
+}
+
+// testDeleteTask: единственное место, где реестр расстаётся с материалом.
+//
+// Правило «только добавление» охраняет выводы: срез обязан объясняться тем, из
+// чего собран. Здесь выводов не остаётся вовсе — уходит вся задача, — и
+// охранять нечего. А вот случай журнала уходить не должен: он относится к
+// человеку и дню, задача в нём только место.
+func testDeleteTask(t *testing.T, st store.Store) {
+	ctx := context.Background()
+
+	create(t, st, task("aura", utc(2026, time.June, 1)))
+	create(t, st, task("other", utc(2026, time.June, 2)))
+
+	link(t, st, domain.ChatLink{
+		TaskID: "aura", System: domain.SystemBitrix, DialogID: "chat12", Title: "чат",
+	})
+	src := domain.Source{
+		ID: "s1", TaskID: "aura", Kind: domain.KindSpec, Title: "ТЗ", Body: "текст",
+		UploadedAt: utc(2026, time.June, 3),
+	}
+	if err := st.AddSource(ctx, src); err != nil {
+		t.Fatalf("AddSource: %v", err)
+	}
+	if err := st.AddFacts(ctx, []domain.Fact{{
+		ID: "f1", TaskID: "aura", Field: "passport.author",
+		Value: domain.Quoted("Кевин", "s1", "цитата"),
+	}}); err != nil {
+		t.Fatalf("AddFacts: %v", err)
+	}
+	if err := st.SaveSlice(ctx, domain.Slice{
+		TaskID: "aura", Version: 1, BuiltAt: utc(2026, time.June, 4), SourceIDs: []string{"s1"},
+	}); err != nil {
+		t.Fatalf("SaveSlice: %v", err)
+	}
+	if err := st.AddCorrection(ctx, domain.Correction{
+		ID: "c1", TaskID: "aura", Field: "status.stage", Doc: []byte(`{"text":"идёт"}`),
+	}); err != nil {
+		t.Fatalf("AddCorrection: %v", err)
+	}
+	if err := st.AddIncident(ctx, domain.Incident{
+		ID: "i1", Employee: "Кевин", Project: "АУРА", TaskID: "aura",
+		At: utc(2026, time.June, 5), Block: domain.KPIDeadlines, Text: "сорвал срок",
+	}); err != nil {
+		t.Fatalf("AddIncident: %v", err)
+	}
+
+	// Соседняя задача со своим материалом: удаление не должно её задеть.
+	if err := st.AddSource(ctx, domain.Source{
+		ID: "s2", TaskID: "other", Kind: domain.KindNote, Title: "Заметка", Body: "текст",
+	}); err != nil {
+		t.Fatalf("AddSource соседней задачи: %v", err)
+	}
+
+	if err := st.DeleteTask(ctx, "aura"); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+
+	if _, err := st.Task(ctx, "aura"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("удалённая задача читается: %v", err)
+	}
+	if list, _ := st.ChatLinks(ctx, "aura"); len(list) != 0 {
+		t.Errorf("остались чаты: %d", len(list))
+	}
+	if list, _ := st.Sources(ctx, "aura"); len(list) != 0 {
+		t.Errorf("остались источники: %d", len(list))
+	}
+	if list, _ := st.Facts(ctx, "aura"); len(list) != 0 {
+		t.Errorf("остались факты: %d", len(list))
+	}
+	if list, _ := st.SliceVersions(ctx, "aura"); len(list) != 0 {
+		t.Errorf("остались версии среза: %d", len(list))
+	}
+	if list, _ := st.Corrections(ctx, "aura"); len(list) != 0 {
+		t.Errorf("остались правки: %d", len(list))
+	}
+
+	// Случай журнала пережил задачу, а ссылка на неё обнулилась: основание для
+	// разговора о KPI не должно пропадать вместе с задачей, но и указывать на
+	// несуществующую задачу оно не может.
+	all, err := st.Incidents(ctx, "")
+	if err != nil {
+		t.Fatalf("Incidents: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("случаев %d, хотели 1", len(all))
+	}
+	switch {
+	case all[0].TaskID != "":
+		t.Errorf("ссылка на удалённую задачу осталась: %q", all[0].TaskID)
+	case all[0].Project != "АУРА":
+		t.Errorf("проект в записи потерян: %q", all[0].Project)
+	}
+
+	// Соседняя задача цела.
+	if _, err := st.Task(ctx, "other"); err != nil {
+		t.Errorf("задета соседняя задача: %v", err)
+	}
+	if list, _ := st.Sources(ctx, "other"); len(list) != 1 {
+		t.Errorf("источники соседней задачи: %d, хотели 1", len(list))
+	}
+
+	// Повторное удаление — ErrNotFound: иначе опечатка в номере выглядела бы
+	// как удавшееся удаление.
+	if err := st.DeleteTask(ctx, "aura"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("повторное удаление: ошибка %v, хотели ErrNotFound", err)
 	}
 }
