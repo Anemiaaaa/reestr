@@ -114,7 +114,8 @@ func (s *Server) chats(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newChatOptions(s.svc.PortalConfigured(), list))
+	owner := s.svc.PortalOwner(r.Context())
+	writeJSON(w, http.StatusOK, newChatOptions(s.svc.PortalConfigured(), owner, list))
 }
 
 // pinChatRequest — чат, который человек прикрепляет к задаче.

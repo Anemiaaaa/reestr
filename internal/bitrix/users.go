@@ -59,6 +59,37 @@ func (c *Client) User(ctx context.Context, id int) (User, error) {
 	}, nil
 }
 
+// Me читает карточку того сотрудника, от чьего имени выдан вебхук.
+//
+// Метод нужен ради одной надписи, и надпись эта важная. Вебхук выдаёт
+// конкретный человек, и портал показывает реестру ровно его переписку: чаты
+// коллег в im.recent.list не попадают, а прочитать их по номеру нельзя —
+// портал отвечает отказом в доступе. Пока в списке чатов не написано, чьи это
+// чаты, отсутствие своей переписки выглядит как поломка реестра.
+//
+// Ответ user.current — объект, а не массив, как у user.get; в остальном
+// соглашение то же самое: ключи в ВЕРХНЕМ регистре, идентификатор строкой.
+func (c *Client) Me(ctx context.Context) (User, error) {
+	var out struct {
+		ID           string `json:"ID"`
+		Name         string `json:"NAME"`
+		LastName     string `json:"LAST_NAME"`
+		WorkPosition string `json:"WORK_POSITION"`
+		Active       bool   `json:"ACTIVE"`
+	}
+	if err := c.Call(ctx, "user.current", nil, &out); err != nil {
+		return User{}, err
+	}
+
+	id, _ := strconv.Atoi(strings.TrimSpace(out.ID))
+	return User{
+		ID:       id,
+		Name:     fullName(out.Name, out.LastName),
+		Position: strings.TrimSpace(out.WorkPosition),
+		Active:   out.Active,
+	}, nil
+}
+
 // Names дособирает имена для тех авторов, которых не оказалось в ответе вместе с
 // сообщениями.
 //

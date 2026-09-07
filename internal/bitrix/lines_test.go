@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -139,5 +140,61 @@ func TestChatMissing(t *testing.T) {
 	// Пустой номер до портала не доходит.
 	if _, err := c.Chat(context.Background(), "  "); err == nil {
 		t.Error("пустой номер чата принят")
+	}
+}
+
+// TestChatForbidden: чужую переписку контакт-центра портал не отдаёт даже по
+// точному номеру — отвечает ACCESS_ERROR. Это не сбой шлюза и не опечатка:
+// чат существует, просто ведёт его другой оператор, и разбирается это в
+// портале. Значит, и ошибка должна быть своя.
+func TestChatForbidden(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	c := serve(t, func(string, url.Values) (int, string) {
+		calls++
+		return http.StatusOK,
+			`{"error":"ACCESS_ERROR","error_description":"You do not have access to the specified dialog"}`
+	})
+
+	_, err := c.Chat(context.Background(), "32000")
+	if !errors.Is(err, ErrChatForbidden) {
+		t.Fatalf("ошибка %v, хотели ErrChatForbidden", err)
+	}
+	// Повторять отказ в доступе незачем: со второй попытки доступ не появится.
+	if calls != 1 {
+		t.Errorf("походов в портал %d, хотели 1", calls)
+	}
+	var portal *Error
+	if errors.As(err, &portal) {
+		t.Errorf("отказ в доступе выдан за сбой портала: %v", err)
+	}
+	// Номер в тексте: человек прикрепляет чаты пачкой и должен видеть, какой
+	// именно не дался.
+	if !strings.Contains(err.Error(), "chat32000") {
+		t.Errorf("в ошибке нет номера чата: %v", err)
+	}
+}
+
+// TestMe: имя владельца вебхука нужно надписи над списком чатов. Ответ
+// user.current — объект с ключами в ВЕРХНЕМ регистре и идентификатором строкой:
+// декодер методов im.* на нём не работает.
+func TestMe(t *testing.T) {
+	t.Parallel()
+
+	c := serve(t, func(method string, _ url.Values) (int, string) {
+		if method != "user.current" {
+			t.Errorf("вызван метод %q", method)
+		}
+		return http.StatusOK,
+			`{"result":{"ID":"3116","NAME":"Александр","LAST_NAME":"Волощук","ACTIVE":true}}`
+	})
+
+	u, err := c.Me(context.Background())
+	if err != nil {
+		t.Fatalf("Me: %v", err)
+	}
+	if u.ID != 3116 || u.Name != "Александр Волощук" {
+		t.Errorf("владелец вебхука: %d %q", u.ID, u.Name)
 	}
 }

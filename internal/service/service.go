@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Anemiaaaa/reestr/internal/analyst"
@@ -66,6 +67,13 @@ type Service struct {
 	portal  *bitrix.Client
 	now     func() time.Time
 	log     *slog.Logger
+
+	// owner — имя того, от кого выдан вебхук. Спрашивается у портала один раз
+	// за запуск: сменить владельца вебхука на ходу нельзя, а список чатов
+	// открывают часто, и лишний вызов на каждое открытие ни к чему.
+	ownerMu  sync.Mutex
+	owner    string
+	ownerAsk bool
 }
 
 // New собирает сервис. Часы отдельным полем, а не вызовом time.Now по месту:
@@ -188,6 +196,39 @@ func (s *Service) PortalChats(ctx context.Context, limit int) ([]bitrix.Chat, er
 		}
 	}
 	return out, nil
+}
+
+// PortalOwner сообщает, от чьего имени выдан вебхук.
+//
+// Нужен ради одной надписи над списком чатов, и надпись эта важнее, чем
+// кажется. Портал показывает реестру переписку одного человека — того, кто
+// выдал вебхук. Чаты коллег в неё не попадают, и прочитать их по номеру тоже
+// нельзя: портал отвечает отказом в доступе. Пока не сказано, чьи это чаты,
+// отсутствие своей переписки в списке выглядит поломкой реестра, а не
+// настройкой портала.
+//
+// Ошибка не возвращается: подпись — украшение списка, и если портал имени не
+// дал, список должен открыться без него.
+func (s *Service) PortalOwner(ctx context.Context) string {
+	if !s.PortalConfigured() {
+		return ""
+	}
+
+	s.ownerMu.Lock()
+	defer s.ownerMu.Unlock()
+	if s.ownerAsk {
+		return s.owner
+	}
+
+	u, err := s.portal.Me(ctx)
+	if err != nil {
+		// Не запоминаем неудачу: портал мог не ответить разово, а следующее
+		// открытие списка спросит снова.
+		s.log.Warn("не удалось узнать владельца вебхука", "ошибка", err)
+		return ""
+	}
+	s.owner, s.ownerAsk = u.Name, true
+	return s.owner
 }
 
 // PortalTasks отдаёт задачи портала, пригодные для закрепления.
@@ -317,7 +358,10 @@ func (s *Service) PinPortalChat(ctx context.Context, taskID, dialogID string) (d
 	if err != nil {
 		// «Нет такого чата» — про присланный номер, а не про портал: он ответил
 		// исправно. Без этой ветки транспорт назвал бы опечатку сбоем шлюза.
-		if errors.Is(err, bitrix.ErrChatNotFound) {
+		// То же и с отказом в доступе: чат существует, портал ответил исправно,
+		// просто ведёт эту переписку кто-то другой. Это разбирается в портале, и
+		// сказать об этом надо словами, а не кодом 502.
+		if errors.Is(err, bitrix.ErrChatNotFound) || errors.Is(err, bitrix.ErrChatForbidden) {
 			return domain.ChatLink{}, fmt.Errorf("%w: %w", err, ErrInvalid)
 		}
 		return domain.ChatLink{}, err

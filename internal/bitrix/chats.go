@@ -239,6 +239,14 @@ func preview(text string) string {
 // исправно, а не сошлось названное человеком.
 var ErrChatNotFound = errors.New("чат не найден в портале")
 
+// ErrChatForbidden — чат в портале есть, но владельцу вебхука он не виден.
+//
+// Так отвечает портал на переписку, в которой владелец вебхука не участвует, —
+// а переписку контакт-центра ведут операторы, и у каждого она своя. Ошибка
+// отдельная, потому что человеку тут нужен не «портал не смог», а точное
+// «этот чат ведёт кто-то другой»: исправляется это в портале, а не в реестре.
+var ErrChatForbidden = errors.New("чат не виден владельцу вебхука")
+
 // Chat отдаёт один чат портала по идентификатору диалога.
 //
 // Метод нужен потому, что im.recent.list показывает только недавние чаты
@@ -262,6 +270,10 @@ func (c *Client) Chat(ctx context.Context, dialogID string) (Chat, error) {
 	var out chatEnvelope
 	params := url.Values{"DIALOG_ID": {dialogID}}
 	if err := c.Call(ctx, "im.chat.get", params, &out); err != nil {
+		var pe *Error
+		if errors.As(err, &pe) && strings.EqualFold(pe.Code, "ACCESS_ERROR") {
+			return Chat{}, fmt.Errorf("%s: %w", dialogID, ErrChatForbidden)
+		}
 		return Chat{}, err
 	}
 
