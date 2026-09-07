@@ -421,7 +421,17 @@ function openModal(dlg, extra, collect) {
         resolve(null);
         return;
       }
-      resolve({ ...collect(), action });
+
+      // action — состояние диалога, а не поле формы, и в данные оно попадать не
+      // должно. Отсюда неперечисляемое свойство: читается как обычное, но не
+      // подхватывается ни разворотом объекта, ни JSON.stringify.
+      //
+      // Обычным полем оно уже стоило поломки всех форм разом: сервер не
+      // принимает неизвестные поля — и правильно делает, — и каждая отправка
+      // отвечала «тело запроса: unknown field action».
+      const out = collect();
+      Object.defineProperty(out, "action", { value: action, enumerable: false });
+      resolve(out);
     });
   });
 }
@@ -1944,9 +1954,14 @@ function incidentFields(j, in_) {
 // incidentBody собирает тело запроса. Подпись «кто зафиксировал» не
 // отправляется ни при записи, ни при правке: её ставит сервер из пропуска.
 function incidentBody(got) {
+  // control из тела убирается: на экране спрашивают «в зоне контроля», а сервер
+  // хранит обратное — «вне зоны». Поле формы и поле записи здесь разные по
+  // смыслу, и отправлять первое вместе со вторым нельзя: сервер не принимает
+  // неизвестных полей.
+  const { control, ...rest } = got;
   return JSON.stringify({
-    ...got,
-    external: got.control === "no",
+    ...rest,
+    external: control === "no",
     escalated: got.escalated === "yes",
   });
 }
