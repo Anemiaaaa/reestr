@@ -857,11 +857,21 @@ func (s *Service) lastBuilt(ctx context.Context, taskID string, latest domain.Sl
 		if err != nil {
 			return domain.Slice{}, err
 		}
-		if sl.EditedBy == "" {
+		if !edited(sl) {
 			return sl, nil
 		}
 	}
 	return latest, nil
+}
+
+// edited отвечает, собрана ли версия правкой.
+//
+// Кроме EditedBy проверяется и подпись аналитика: у версий, сделанных до
+// появления этого поля, правка помечалась именем «правка: кто-то» в Analyst.
+// Без второй проверки такая версия сходила бы за собранную разбором, и
+// «вернуть как было» возвращало бы к чужой правке, а не к разбору.
+func edited(sl domain.Slice) bool {
+	return sl.EditedBy != "" || strings.HasPrefix(sl.Analyst, "правка")
 }
 
 // outputOf восстанавливает структуры разбора из собранной версии.

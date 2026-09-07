@@ -984,6 +984,17 @@ function drawRail(b) {
         onclick: ev => pull(ev.currentTarget),
       })
       : null,
+    // Выгрузка — ради неё срез и делают: его показывают заказчику и на
+    // планёрке. До сих пор он жил только во вкладке браузера.
+    el("div", { class: "rail__sep" }),
+    el("button", { class: "btn btn--wide", type: "button", text: "Скопировать текстом", onclick: ev => copySlice(ev.currentTarget) }),
+    el("a", {
+      class: "btn btn--wide btn--link",
+      href: "/api/tasks/" + encodeURIComponent(state.current) + "/slice.md",
+      text: "Скачать файлом",
+    }),
+    el("button", { class: "btn btn--wide", type: "button", text: "Печать и PDF", onclick: () => window.print() }),
+
     // Удаление стоит здесь, а не в глубине вкладки «Версии», где его никто не
     // находил. Оно необратимое, поэтому отделено чертой и набрано красным.
     el("div", { class: "rail__sep" }),
@@ -1398,6 +1409,37 @@ function drawVersions(list) {
   });
 
   return el("div", {}, box, out);
+}
+
+// copySlice кладёт срез текстом в буфер обмена.
+//
+// Текст берётся у сервера, а не собирается из разметки страницы: у одного среза
+// должно быть одно изложение, и собранное здесь разошлось бы с файлом на первой
+// же правке вёрстки.
+async function copySlice(btn) {
+  btn.disabled = true;
+  const was = btn.textContent;
+  try {
+    const res = await fetch("/api/tasks/" + encodeURIComponent(state.current) + "/slice.md");
+    if (!res.ok) throw new Error(res.status + " " + res.statusText);
+    const text = await res.text();
+
+    // Буфер обмена доступен не везде: браузер отдаёт его только по защищённому
+    // соединению или на петле. Отказ здесь — не поломка, и человеку надо
+    // сказать, чем воспользоваться вместо.
+    if (!navigator.clipboard) {
+      throw new Error("браузер не даёт доступ к буферу — нажмите «Скачать файлом»");
+    }
+    await navigator.clipboard.writeText(text);
+
+    btn.textContent = "скопировано";
+    setTimeout(() => { btn.textContent = was; }, 1500);
+  } catch (e) {
+    btn.textContent = was;
+    flash(e.message);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // dropVersion снимает версию среза.

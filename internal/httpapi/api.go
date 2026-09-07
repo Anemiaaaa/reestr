@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/Anemiaaaa/reestr/internal/auth"
 	"github.com/Anemiaaaa/reestr/internal/bitrix"
 	"github.com/Anemiaaaa/reestr/internal/domain"
+	"github.com/Anemiaaaa/reestr/internal/report"
 	"github.com/Anemiaaaa/reestr/internal/ru"
 	"github.com/Anemiaaaa/reestr/internal/service"
 	"github.com/Anemiaaaa/reestr/internal/store"
@@ -54,6 +57,7 @@ func New(svc *service.Service, web fs.FS, log *slog.Logger, a *auth.Auth) *Serve
 	mux.HandleFunc("GET /api/tasks/{id}", s.task)
 	mux.HandleFunc("GET /api/tasks/{id}/board", s.board)
 	mux.HandleFunc("GET /api/tasks/{id}/slice", s.slice)
+	mux.HandleFunc("GET /api/tasks/{id}/slice.md", s.sliceText)
 	mux.HandleFunc("POST /api/tasks/{id}/slice/rebuild", s.rebuild)
 	mux.HandleFunc("POST /api/tasks/{id}/slice/correct", s.correct)
 	mux.HandleFunc("DELETE /api/tasks/{id}/slice/corrections", s.dropCorrections)
@@ -646,6 +650,66 @@ func (s *Server) version(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, newSlice(sl, t, list, s.svc.Now(), edited))
+}
+
+// sliceText отдаёт срез разметкой Markdown — тем, что можно вставить в чат,
+// приложить к письму или сохранить файлом.
+//
+// Готовый срез, а не пересборка: выгружают то, что человек видит на экране, и
+// звать модель ради выгрузки значило бы платить за неё и получить другой текст.
+func (s *Server) sliceText(w http.ResponseWriter, r *http.Request) {
+	ctx, id := r.Context(), r.PathValue("id")
+
+	sl, err := s.svc.Slice(ctx, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	t, err := s.svc.Task(ctx, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	list, err := s.svc.Sources(ctx, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	body := report.Markdown(sl, t, list, s.svc.Now())
+
+	// Имя файла — из названия задачи и номера версии: в папке загрузок должно
+	// быть видно, что это за срез, без открытия.
+	name := fmt.Sprintf("%s v%d.md", fileName(t.Title), sl.Version)
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	// Кодировка имени по RFC 5987: кириллица в обычном filename ломается.
+	w.Header().Set("Content-Disposition",
+		"attachment; filename*=UTF-8''"+url.PathEscape(name))
+	_, _ = io.WriteString(w, body)
+}
+
+// fileName делает из названия задачи имя файла, годное для любой файловой
+// системы. Пустое название заменяется словом: файл «.md» не сохранить.
+func fileName(title string) string {
+	bad := func(r rune) bool {
+		return strings.ContainsRune(`\/:*?"<>|`, r) || r < 0x20
+	}
+	out := strings.TrimSpace(strings.Map(func(r rune) rune {
+		if bad(r) {
+			return ' '
+		}
+		return r
+	}, title))
+	// Windows не даёт точку в конце имени, а длинные названия задач в портале
+	// бывают в две строки.
+	out = strings.TrimRight(out, ". ")
+	if len([]rune(out)) > 80 {
+		out = strings.TrimSpace(string([]rune(out)[:80]))
+	}
+	if out == "" {
+		return "Срез"
+	}
+	return out
 }
 
 // correctRequest — правка одного поля среза.

@@ -1329,3 +1329,55 @@ h1 {
    внутри, чтобы кнопки «сохранить» и «отмена» всегда оставались на месте. */
 .modal__body { max-height: 68vh; overflow-y: auto; }
 .modal__extra { margin-right: auto; }
+
+/* Ссылка, оформленная кнопкой: скачивание идёт обычным переходом по адресу, а
+   не скриптом, — тогда браузер сам покажет прогресс и положит файл куда надо. */
+.btn--link { display: block; text-align: center; text-decoration: none; }
+
+/* --- печать --- */
+
+/* Печать здесь — это ещё и «сохранить в PDF»: другого способа вынести срез
+   документом у браузера нет, а вынести его надо, ради этого срез и делают.
+
+   Печатается только сам срез. Список задач, вкладки, правая колонка и все
+   кнопки — это способ добраться до текста, а не текст; на бумаге они занимают
+   первую страницу и не значат ничего. */
+@media print {
+  .side,
+  .rail,
+  .tabs,
+  .fix,
+  .btn,
+  .warns__more,
+  .progress { display: none !important; }
+
+  html, body { height: auto; }
+  .app { display: block; height: auto; overflow: visible; }
+  .main { overflow: visible; }
+
+  .page,
+  .page--split { display: block; max-width: none; padding: 0; }
+
+  body { font-size: 11pt; }
+  h1 { font-size: 20pt; margin-top: 0; }
+  .sec__title { font-size: 14pt; }
+
+  /* Раздел не разрывается посередине, если помещается целиком: критерий,
+     оторванный от своего заголовка, на следующей странице читается как чужой. */
+  .sec { break-inside: avoid; margin-top: 22px; }
+  .card, .tick, .step, .kpi { break-inside: avoid; }
+
+  /* Цитаты на бумаге раскрыты все: развернуть их там нельзя, а без них
+     выгрузка становится отчётом, который нечем проверить. */
+  .quote[hidden] { display: block !important; }
+  .warns[hidden] { display: flex !important; }
+
+  /* Фон при печати не отдаётся принтеру, и залитые блоки выходят белыми с
+     невидимым текстом. Возвращаем им рамку вместо заливки. */
+  .head, .rail__box, .quote, .card, .sheet {
+    background: none !important;
+    border: 1px solid #ccc;
+  }
+
+  a[href]::after { content: ""; }
+}
