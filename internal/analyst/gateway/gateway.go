@@ -31,7 +31,12 @@ const (
 	// timeout на один вызов. Разбор длинный: модель читает всю переписку и
 	// пишет ответ на несколько тысяч токенов. Обрывать её на тридцатой секунде
 	// значит платить за вызов и не получать ответа.
-	timeout = 5 * time.Minute
+	//
+	// Десять минут, а не пять: у рассуждающих моделей время ответа гуляет в
+	// разы от задачи к задаче — на одном материале двадцать секунд, на другом,
+	// меньшем по объёму, пять минут. Обрыв по нашему сроку — худший из исходов:
+	// модель работу сделала, деньги списаны, ответа нет.
+	timeout = 10 * time.Minute
 
 	// maxTokens — потолок ответа. Скупой потолок обрубает JSON на середине, и
 	// вместо разбора получается ошибка формата, неотличимая от сбоя модели.
@@ -51,16 +56,28 @@ type Options struct {
 	// приходит настройкой, а не константой.
 	Model string
 
+	// Reasoning — сколько рассуждать перед ответом: «low», «medium», «high».
+	// Пусто означает «не просить ничего»: поле понимают не все модели, и
+	// отправлять его туда, где его не ждут, незачем.
+	//
+	// Настройка нужна из-за рассуждающих моделей. Наша работа — извлечение по
+	// строгой схеме, а не размышление, но модель об этом не знает и способна
+	// уйти думать на минуты, а то и до упора в потолок токенов — так уже
+	// случилось с claude-sonnet-5, которая до вызова инструмента не доходила
+	// вовсе.
+	Reasoning string
+
 	Log *slog.Logger
 }
 
 // Analyst — разбор источников моделью через шлюз.
 type Analyst struct {
-	base  string
-	key   string
-	model string
-	http  *http.Client
-	log   *slog.Logger
+	base      string
+	key       string
+	model     string
+	reasoning string
+	http      *http.Client
+	log       *slog.Logger
 }
 
 // Проверка на этапе компиляции.
@@ -84,11 +101,12 @@ func New(o Options) (*Analyst, error) {
 	}
 
 	return &Analyst{
-		base:  base,
-		key:   strings.TrimSpace(o.APIKey),
-		model: strings.TrimSpace(o.Model),
-		http:  &http.Client{Timeout: timeout},
-		log:   o.Log,
+		base:      base,
+		key:       strings.TrimSpace(o.APIKey),
+		model:     strings.TrimSpace(o.Model),
+		reasoning: strings.TrimSpace(o.Reasoning),
+		http:      &http.Client{Timeout: timeout},
+		log:       o.Log,
 	}, nil
 }
 
@@ -105,6 +123,7 @@ func (a *Analyst) Extract(ctx context.Context, in analyst.Input) (analyst.Output
 	body, err := json.Marshal(request{
 		Model:     a.model,
 		MaxTokens: maxTokens,
+		Reasoning: a.reasoning,
 		Messages: []message{
 			{Role: "system", Content: schema.SystemPrompt},
 			{Role: "user", Content: schema.UserPrompt(in)},
@@ -189,6 +208,20 @@ func (a *Analyst) call(ctx context.Context, body []byte) (json.RawMessage, error
 		return nil, fmt.Errorf("шлюз не вернул ни одного варианта ответа")
 	}
 
+	// Цена разбора пишется в лог каждый раз. Разбор платный, а узнать, во что
+	// он обошёлся, иначе можно только по остатку в чужом личном кабинете — и то
+	// разницей между двумя взглядами на него. Пишем после проверки ответа, но до
+	// разбора содержимого: деньги списаны в любом случае, даже если модель
+	// ответила не тем, чем просили.
+	if u := out.Usage; u != nil {
+		a.log.Info("разбор оплачен",
+			"модель", a.model,
+			"токенов на вход", u.PromptTokens,
+			"токенов на выход", u.CompletionTokens,
+			"стоил", u.Cost,
+			"из бесплатных", u.Free)
+	}
+
 	choice := out.Choices[0]
 	for _, c := range choice.Message.ToolCalls {
 		if c.Function.Name == schema.ToolName {
@@ -219,8 +252,12 @@ func snippet(b []byte) string {
 // --- форма запроса и ответа ---
 
 type request struct {
-	Model      string     `json:"model"`
-	MaxTokens  int        `json:"max_tokens"`
+	Model     string `json:"model"`
+	MaxTokens int    `json:"max_tokens"`
+
+	// Reasoning уходит только когда задано: поле понимают не все модели.
+	Reasoning string `json:"reasoning_effort,omitempty"`
+
 	Messages   []message  `json:"messages"`
 	Tools      []tool     `json:"tools"`
 	ToolChoice toolChoice `json:"tool_choice"`
@@ -257,6 +294,17 @@ type response struct {
 	Error   *struct {
 		Message string `json:"message"`
 	} `json:"error"`
+
+	// Usage — сколько стоил разбор. Поля сверх стандарта OpenAI (cost_request,
+	// free_request) шлюз добавляет от себя; у прямого поставщика их не будет, и
+	// тогда в логе останутся одни токены.
+	Usage *struct {
+		PromptTokens     int     `json:"prompt_tokens"`
+		CompletionTokens int     `json:"completion_tokens"`
+		TotalTokens      int     `json:"total_tokens"`
+		Cost             float64 `json:"cost_request"`
+		Free             bool    `json:"free_request"`
+	} `json:"usage"`
 }
 
 type choice struct {

@@ -129,8 +129,8 @@ type milestone struct {
 
 	// Progress — наблюдение «сделано вполовину», а не оценка готовности задачи:
 	// её выведет сервис из этапов и фактов.
-	Progress float64  `json:"progress"`
-	Evidence []string `json:"evidence,omitempty"`
+	Progress float64 `json:"progress"`
+	Evidence textList `json:"evidence,omitempty"`
 }
 
 type shift struct {
@@ -179,4 +179,38 @@ type pmAction struct {
 	Kind string `json:"kind"`
 	Text string `json:"text"`
 	Why  string `json:"why,omitempty"`
+}
+
+// textList — список строк, принимающий и одну голую строку.
+//
+// Та же уступка, что и у Value, и по той же причине: строгий режим схемы не
+// спасает. Проверено на живом шлюзе — gpt-5-mini вернула в поле evidence одного
+// этапа строку вместо списка, и разбор всего ответа падал на этом одном поле.
+// Оплаченный вызов пропадал целиком из-за расхождения в одной скобке.
+//
+// Разница с Value в том, что здесь потери смысла нет вовсе: «одно основание» и
+// «список из одного основания» — одно и то же утверждение, и превращать первое
+// во второе можно молча.
+type textList []string
+
+func (s *textList) UnmarshalJSON(b []byte) error {
+	var list []string
+	if err := json.Unmarshal(b, &list); err == nil {
+		*s = list
+		return nil
+	}
+
+	var one string
+	if err := json.Unmarshal(b, &one); err != nil {
+		// Ни список, ни строка. Пустой список, а не ошибка: основание —
+		// пояснение к этапу, и терять из-за него весь разбор незачем.
+		*s = nil
+		return nil
+	}
+	if one == "" {
+		*s = nil
+		return nil
+	}
+	*s = []string{one}
+	return nil
 }

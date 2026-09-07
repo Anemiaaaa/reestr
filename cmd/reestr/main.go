@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -172,26 +173,63 @@ func run() error {
 // откатиться на ручной разбор было бы хуже отказа — человек ждал бы от среза
 // свежего разбора и не понял, почему видит старый.
 func chooseAnalyst(log *slog.Logger) analyst.Analyst {
-	key := config.Env("ANTHROPIC_API_KEY", "")
-	model := config.Env("ANTHROPIC_MODEL", "")
+	// Свои имена настроек идут первыми, чужие остаются запасными.
+	//
+	// ANTHROPIC_* — не наше пространство имён, и это уже стоило разбирательства.
+	// На машине, где стоит любой инструмент Anthropic, ANTHROPIC_BASE_URL задан
+	// в окружении и указывает на api.anthropic.com. Окружение у нас сильнее
+	// файла — правило верное, менять его нельзя, — и реестр молча ходил в чужой
+	// адрес вместо шлюза из .env. Ошибки при запуске не было никакой: разбор
+	// падал на первом же вызове с пустым 404, который отдаёт чужой Cloudflare на
+	// несуществующий путь.
+	url := first("REESTR_MODEL_URL", "ANTHROPIC_BASE_URL")
+	key := first("REESTR_MODEL_KEY", "ANTHROPIC_API_KEY")
+	model := first("REESTR_MODEL", "ANTHROPIC_MODEL")
+
 	if key == "" || model == "" {
 		log.Info("модель не настроена, разбор ручной")
 		return manual.New()
 	}
 
 	a, err := gateway.New(gateway.Options{
-		BaseURL: config.Env("ANTHROPIC_BASE_URL", ""),
-		APIKey:  key,
-		Model:   model,
-		Log:     log,
+		BaseURL:   url,
+		APIKey:    key,
+		Model:     model,
+		Reasoning: config.Env("REESTR_MODEL_REASONING", ""),
+		Log:       log,
 	})
 	if err != nil {
 		// Адрес шлюза и модель в лог попадают, ключ — нет.
 		log.Warn("модель настроена неверно, разбор ручной", "ошибка", err)
 		return manual.New()
 	}
-	log.Info("разбор моделью", "модель", model)
+
+	// Узел шлюза пишется при каждом запуске, и это не украшательство: подмена
+	// адреса чужой переменной окружения не проявляется ничем, кроме отказа
+	// разбора, и найти её можно только сравнив то, что задумано, с тем, что
+	// используется. Узел без пути и без ключа — в адресе шлюза бывает и то и
+	// другое, а лог читают не только свои.
+	log.Info("разбор моделью", "модель", model, "шлюз", host(url))
 	return a
+}
+
+// first возвращает первую заполненную настройку из перечисленных.
+func first(keys ...string) string {
+	for _, k := range keys {
+		if v := config.Env(k, ""); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// host — узел адреса без схемы, пути и учётных данных. Для лога.
+func host(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return "не разобран"
+	}
+	return u.Host
 }
 
 // openStore открывает хранилище: базу, если задана строка подключения, иначе

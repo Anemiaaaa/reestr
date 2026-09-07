@@ -499,3 +499,46 @@ func TestValueFromGarbage(t *testing.T) {
 		t.Errorf("мусор принят за значение: %+v / %+v", a.Stage, a.GoalAsStated)
 	}
 }
+
+// TestTextListAcceptsBareString: модель возвращает в списке оснований то список,
+// то одну строку. Строгий режим схемы этого не удержал — проверено на живом
+// шлюзе, gpt-5-mini так ответила, — и разбор всего ответа падал на одном поле
+// вместе с оплаченным вызовом.
+func TestTextListAcceptsBareString(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{"список", `["одно","другое"]`, []string{"одно", "другое"}},
+		{"голая строка", `"одно"`, []string{"одно"}},
+		{"пустая строка", `""`, nil},
+		{"пустой список", `[]`, []string{}},
+		{"null", `null`, nil},
+		// Ни список, ни строка — пустой список, а не ошибка: основание это
+		// пояснение к этапу, и терять из-за него весь разбор незачем.
+		{"число", `42`, nil},
+		{"объект", `{"a":1}`, nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var got textList
+			if err := json.Unmarshal([]byte(tc.raw), &got); err != nil {
+				t.Fatalf("разбор %s: %v", tc.raw, err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("получили %#v, хотели %#v", []string(got), tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("элемент %d = %q, хотели %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
