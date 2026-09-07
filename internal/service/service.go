@@ -229,6 +229,7 @@ func (s *Service) PinChat(ctx context.Context, in domain.ChatLink) (domain.ChatL
 		System:         strings.TrimSpace(in.System),
 		DialogID:       strings.TrimSpace(in.DialogID),
 		Title:          strings.TrimSpace(in.Title),
+		Kind:           in.Kind,
 		ExternalTaskID: strings.TrimSpace(in.ExternalTaskID),
 		LinkedAt:       s.now(),
 	}
@@ -258,6 +259,83 @@ func (s *Service) PinChat(ctx context.Context, in domain.ChatLink) (domain.ChatL
 		"задача", link.TaskID, "система", link.System, "чат", link.DialogID,
 		"задача портала", link.ExternalTaskID)
 	return link, nil
+}
+
+// PinPortalChat закрепляет за задачей чат портала, названный человеком.
+//
+// Отдельно от PinChat, потому что подпись и род чата берутся у портала, а не с
+// формы. Браузер называет чат номером — какой это чат и как он подписан, знает
+// портал; присланному названию пришлось бы верить на слово, а оно попадает в
+// срез и в список источников.
+//
+// Ради этого метода всё и затевалось: переписку с клиентом ведут в
+// контакт-центре, и до сих пор прикрепить её к задаче было нечем — чат
+// закреплялся только один и только при создании задачи, из карточки портала.
+func (s *Service) PinPortalChat(ctx context.Context, taskID, dialogID string) (domain.ChatLink, error) {
+	taskID = strings.TrimSpace(taskID)
+	dialogID = strings.TrimSpace(dialogID)
+
+	switch {
+	case taskID == "":
+		return domain.ChatLink{}, fmt.Errorf("не указана задача: %w", ErrInvalid)
+	case dialogID == "":
+		return domain.ChatLink{}, fmt.Errorf("не указан чат: %w", ErrInvalid)
+	case !s.PortalConfigured():
+		return domain.ChatLink{}, fmt.Errorf("Bitrix24 не настроен: %w", ErrInvalid)
+	}
+
+	chat, err := s.portal.Chat(ctx, dialogID)
+	if err != nil {
+		// «Нет такого чата» — про присланный номер, а не про портал: он ответил
+		// исправно. Без этой ветки транспорт назвал бы опечатку сбоем шлюза.
+		if errors.Is(err, bitrix.ErrChatNotFound) {
+			return domain.ChatLink{}, fmt.Errorf("%w: %w", err, ErrInvalid)
+		}
+		return domain.ChatLink{}, err
+	}
+
+	return s.PinChat(ctx, domain.ChatLink{
+		TaskID:   taskID,
+		System:   domain.SystemBitrix,
+		DialogID: chat.DialogID,
+		Title:    chat.Title,
+		Kind:     chatKind(chat),
+	})
+}
+
+// chatKind переводит род чата портала в род реестра.
+//
+// Перевод живёт здесь, а не в пакете bitrix: тот говорит на языке портала и о
+// домене реестра не знает. И не в домене: он не знает про портал.
+func chatKind(c bitrix.Chat) domain.ChatKind {
+	switch c.Kinded() {
+	case bitrix.HintLines:
+		return domain.ChatLines
+	case bitrix.HintTask:
+		return domain.ChatTask
+	case bitrix.HintGroup:
+		return domain.ChatGroup
+	}
+	return domain.ChatPrivate
+}
+
+// UnpinChat снимает чат с задачи.
+//
+// Перенесённые сообщения и заведённые из них источники остаются на месте:
+// снятие связи означает «больше отсюда не читаем», а не «этого не было». Срез,
+// собранный на этой переписке, обязан продолжать объясняться ею.
+func (s *Service) UnpinChat(ctx context.Context, taskID, dialogID string) error {
+	taskID = strings.TrimSpace(taskID)
+	dialogID = strings.TrimSpace(dialogID)
+	if taskID == "" || dialogID == "" {
+		return fmt.Errorf("нужны и задача, и чат: %w", ErrInvalid)
+	}
+
+	if err := s.store.UnlinkChat(ctx, taskID, domain.SystemBitrix, dialogID); err != nil {
+		return err
+	}
+	s.log.Info("чат снят с задачи", "задача", taskID, "чат", dialogID)
+	return nil
 }
 
 // TaskChats возвращает чаты, закреплённые за задачей, в порядке закрепления.

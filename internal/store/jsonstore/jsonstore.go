@@ -192,12 +192,30 @@ func (s *Store) LinkChat(ctx context.Context, link domain.ChatLink) error {
 		// аргумента откатила бы курсор в ноль, и вся переписка приехала бы вторым
 		// экземпляром.
 		s.st.ChatLinks[i].Title = link.Title
+		s.st.ChatLinks[i].Kind = link.Kind
 		s.st.ChatLinks[i].ExternalTaskID = link.ExternalTaskID
 		return s.persist()
 	}
 
 	s.st.ChatLinks = append(s.st.ChatLinks, link)
 	return s.persist()
+}
+
+// UnlinkChat снимает чат с задачи.
+//
+// Перенесённые сообщения и заведённые источники остаются: снятие связи означает
+// «больше отсюда не читаем», а не «этого не было».
+func (s *Store) UnlinkChat(_ context.Context, taskID, system, dialogID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, l := range s.st.ChatLinks {
+		if l.TaskID == taskID && l.System == system && l.DialogID == dialogID {
+			s.st.ChatLinks = append(s.st.ChatLinks[:i], s.st.ChatLinks[i+1:]...)
+			return s.persist()
+		}
+	}
+	return fmt.Errorf("чат %s задачи %s: %w", dialogID, taskID, store.ErrNotFound)
 }
 
 // ChatLinks возвращает чаты задачи в порядке закрепления. Сортировки нет

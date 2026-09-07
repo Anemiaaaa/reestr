@@ -768,6 +768,16 @@ type chat struct {
 	// TaskRef — задача портала, чей это чат, готовой подписью. Пусто у чата,
 	// закреплённого самого по себе.
 	TaskRef string `json:"taskRef,omitempty"`
+
+	// Kind и KindLabel — род чата: переписка с клиентом, чат задачи, групповой,
+	// личный. По DialogID этого не видно, а разница существенная: в открытой
+	// линии контакт-центра говорит клиент.
+	Kind      string `json:"kind,omitempty"`
+	KindLabel string `json:"kindLabel,omitempty"`
+
+	// Client отмечает переписку с клиентом. Отдельным признаком, а не сравнением
+	// строк в браузере: правило «чьи это слова» одно и живёт в домене.
+	Client bool `json:"client,omitempty"`
 }
 
 // chatOptions — ответ на запрос списка чатов портала.
@@ -799,7 +809,14 @@ func newChatOptions(configured bool, list []bitrix.Chat) chatOptions {
 func newChats(list []bitrix.Chat) []chat {
 	out := make([]chat, 0, len(list))
 	for _, c := range list {
-		v := chat{DialogID: c.DialogID, Title: c.Title, Label: c.Title}
+		kind := chatKindOf(c)
+		v := chat{
+			DialogID: c.DialogID, Title: c.Title, Label: c.Title,
+			Kind: string(kind), KindLabel: kind.Label(), Client: kind.Client(),
+		}
+		// Род чата в подписи стоит первым: человек ищет в списке переписку с
+		// клиентом, а не чат с названием «Открытая линия 3».
+		v.Label = kind.Label() + " · " + v.Label
 		if !c.LastActivity.IsZero() {
 			v.Label += " · " + domain.FormatDate(c.LastActivity)
 		}
@@ -820,7 +837,10 @@ func newLinks(list []domain.ChatLink) []chat {
 			title = l.DialogID
 		}
 
-		v := chat{DialogID: l.DialogID, Title: title, Label: title}
+		v := chat{
+			DialogID: l.DialogID, Title: title, Label: title,
+			Kind: string(l.Kind), KindLabel: l.Kind.Label(), Client: l.Kind.Client(),
+		}
 		if l.ExternalTaskID != "" {
 			v.TaskRef = "задача Bitrix24 №" + l.ExternalTaskID
 		}
@@ -1309,4 +1329,22 @@ func periodText(from, to time.Time) string {
 		return "с " + domain.FormatDate(from)
 	}
 	return domain.FormatDate(from) + " — " + domain.FormatDate(to)
+}
+
+// chatKindOf переводит род чата портала в род реестра.
+//
+// Тот же перевод, что и в сервисе, но здесь он нужен для списка выбора: там
+// чат ещё не закреплён и связи с родом у него нет. Общей функции у них нет
+// намеренно — сервис переводит, чтобы сохранить, а транспорт, чтобы показать, и
+// сводить это в один вызов значило бы связать слои ради экономии четырёх строк.
+func chatKindOf(c bitrix.Chat) domain.ChatKind {
+	switch c.Kinded() {
+	case bitrix.HintLines:
+		return domain.ChatLines
+	case bitrix.HintTask:
+		return domain.ChatTask
+	case bitrix.HintGroup:
+		return domain.ChatGroup
+	}
+	return domain.ChatPrivate
 }

@@ -50,6 +50,14 @@ type Store interface {
 	// экземпляром.
 	LinkChat(ctx context.Context, link domain.ChatLink) error
 
+	// UnlinkChat снимает чат с задачи. Отсутствующая связь — ErrNotFound.
+	//
+	// Изъятие здесь законно по той же причине, по которой законен курсор: связь
+	// не материал, а закладка. Перенесённые из чата сообщения и заведённые
+	// источники остаются на месте — снятие связи означает «больше отсюда не
+	// читаем», а не «этого не было».
+	UnlinkChat(ctx context.Context, taskID, system, dialogID string) error
+
 	// ChatLinks возвращает чаты, закреплённые за задачей, в порядке
 	// закрепления.
 	ChatLinks(ctx context.Context, taskID string) ([]domain.ChatLink, error)

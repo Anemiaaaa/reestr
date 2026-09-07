@@ -219,11 +219,20 @@ func (s *Service) sourceFrom(ctx context.Context, link domain.ChatLink, msgs []d
 }
 
 // chatTitle — подпись чата для названия источника.
+//
+// Переписка с клиентом названа так прямо, а не «перепиской»: в срезе источник
+// подставляется рядом с цитатой, и «клиент сказал, что процесс завис» весит не
+// столько же, сколько та же фраза от коллеги. Различить их читатель среза
+// должен по названию источника, не открывая его.
 func chatTitle(link domain.ChatLink) string {
-	if title := strings.TrimSpace(link.Title); title != "" {
-		return "Переписка: " + title
+	what := "Переписка"
+	if link.Kind.Client() {
+		what = "Переписка с клиентом"
 	}
-	return "Переписка в чате " + link.DialogID
+	if title := strings.TrimSpace(link.Title); title != "" {
+		return what + ": " + title
+	}
+	return what + " в чате " + link.DialogID
 }
 
 // msgRange — диапазон номеров сообщений, чтобы по названию источника было видно,

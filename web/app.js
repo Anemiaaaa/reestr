@@ -505,16 +505,108 @@ function drawHead(h) {
   return box;
 }
 
+// drawChats рисует закреплённые чаты задачи.
+//
+// Чатов бывает несколько: обсуждение задачи ведут внутри, а с клиентом говорят
+// в контакт-центре, и обе переписки относятся к одной работе. Поэтому каждый
+// чат отдельной строкой, а не все через точку в один абзац: строку с
+// перепиской, которую пора открепить, надо уметь найти глазами.
 function drawChats(list) {
-  if (!list || !list.length) return null;
-  // Подпись собирается из готовых кусков сервера: и «задача Bitrix24 №4», и
-  // «сообщения до №46» приходят строками, чтобы не форматировать их здесь
-  // второй раз.
-  const line = list.map(c => {
-    const notes = [c.taskRef, c.syncText].filter(Boolean);
-    return notes.length ? c.label + " (" + notes.join(", ") + ")" : c.label;
-  }).join(" · ");
-  return el("div", { class: "crumb crumb--chat" }, "чат: " + line);
+  const box = el("div", { class: "chats" });
+
+  for (const c of list || []) {
+    // Подписи собраны сервером: и «задача Bitrix24 №4», и «сообщения до №46»
+    // приходят строками, чтобы не форматировать их здесь второй раз.
+    const notes = [c.taskRef, c.syncText].filter(Boolean).join(", ");
+    box.append(el("div", { class: c.client ? "chats__row chats__row--client" : "chats__row" },
+      el("span", { class: "chats__kind", text: c.kindLabel || "чат" }),
+      el("span", { class: "chats__title", text: c.title }),
+      notes ? el("span", { class: "chats__note", text: notes }) : null,
+      el("button", {
+        class: "linkish linkish--drop",
+        type: "button",
+        text: "открепить",
+        onclick: () => unpinChat(c),
+      })));
+  }
+
+  box.append(el("button", {
+    class: "linkish chats__add",
+    type: "button",
+    text: "+ прикрепить чат",
+    onclick: pinChat,
+  }));
+  return box;
+}
+
+// pinChat прикрепляет к задаче ещё один чат портала.
+//
+// Обычно это переписка с клиентом из контакт-центра. Список чатов портала
+// показывается для выбора, но полагаться только на него нельзя: im.recent.list
+// отдаёт недавние чаты владельца вебхука, а переписку контакт-центра ведут
+// операторы, и владельца вебхука в ней может не быть ни одного сообщения.
+// Поэтому рядом со списком — поле для номера: его видно в адресной строке
+// портала, и это единственный надёжный путь.
+async function pinChat() {
+  let options = [["", "— выбрать из списка портала —"]];
+  let note = "";
+  try {
+    const res = await api("/api/bitrix/chats");
+    note = res.note || "";
+    options = options.concat(res.chats.map(c => [c.dialogId, c.label]));
+  } catch (e) {
+    note = "список чатов не загрузился: " + e.message;
+  }
+
+  const got = await ask("Прикрепить чат", [
+    { name: "pick", label: "Чат портала", kind: "select", options, note },
+    {
+      name: "dialogId", label: "Или номер чата",
+      hint: "например 28 или chat28",
+      note: "Номер виден в адресной строке портала. Пригодится, когда переписки " +
+        "контакт-центра нет в списке: в неё владелец вебхука мог ни разу не писать.",
+    },
+  ]);
+  if (!got) return;
+
+  // Набранный номер главнее выбранного из списка: если человек его напечатал,
+  // он и есть ответ, а список мог остаться на прежнем пункте.
+  const dialogId = got.dialogId || got.pick;
+  if (!dialogId) {
+    flash("Не выбран чат: выберите из списка или наберите номер.");
+    return;
+  }
+
+  try {
+    await api("/api/tasks/" + encodeURIComponent(state.current) + "/chats", {
+      method: "POST",
+      body: JSON.stringify({ dialogId }),
+    });
+    await open(state.current);
+  } catch (e) {
+    flash(e.message);
+  }
+}
+
+// unpinChat снимает чат с задачи.
+//
+// Перенесённые сообщения и заведённые из них источники остаются: открепление
+// означает «больше отсюда не читаем», а не «этого не было». Срез, собранный на
+// этой переписке, обязан продолжать ею объясняться.
+async function unpinChat(c) {
+  const what = "Открепить «" + c.title + "»?";
+  const why = "Уже перенесённые сообщения и заведённые из них источники останутся: " +
+    "срез, собранный на них, должен продолжать объясняться. Новые сообщения " +
+    "из этого чата подтягиваться перестанут.";
+  if (!window.confirm(what + "\n\n" + why)) return;
+
+  try {
+    await api("/api/tasks/" + encodeURIComponent(state.current) +
+      "/chats?dialog=" + encodeURIComponent(c.dialogId), { method: "DELETE" });
+    await open(state.current);
+  } catch (e) {
+    flash(e.message);
+  }
 }
 
 // drawWarns рисует предупреждения сводки.

@@ -63,6 +63,8 @@ func New(svc *service.Service, web fs.FS, log *slog.Logger, a *auth.Auth) *Serve
 	mux.HandleFunc("DELETE /api/tasks/{id}/slice/corrections", s.dropCorrections)
 	mux.HandleFunc("DELETE /api/tasks/{id}/slices/{version}", s.deleteVersion)
 	mux.HandleFunc("POST /api/tasks/{id}/pull", s.pull)
+	mux.HandleFunc("POST /api/tasks/{id}/chats", s.pinChat)
+	mux.HandleFunc("DELETE /api/tasks/{id}/chats", s.unpinChat)
 	mux.HandleFunc("GET /api/tasks/{id}/slices", s.versions)
 	mux.HandleFunc("GET /api/tasks/{id}/slices/compare", s.compare)
 	mux.HandleFunc("GET /api/tasks/{id}/slices/{version}", s.version)
@@ -112,6 +114,48 @@ func (s *Server) chats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, newChatOptions(s.svc.PortalConfigured(), list))
+}
+
+// pinChatRequest — чат, который человек прикрепляет к задаче.
+//
+// Одно поле: номер. Подпись и род чата приходят от портала, а не с формы —
+// браузер называет чат, а какой он и как подписан, знает портал. Присланному
+// названию пришлось бы верить на слово, а оно попадает в срез и в список
+// источников.
+type pinChatRequest struct {
+	DialogID string `json:"dialogId"`
+}
+
+// pinChat прикрепляет к задаче чат портала — обычно переписку с клиентом из
+// контакт-центра.
+func (s *Server) pinChat(w http.ResponseWriter, r *http.Request) {
+	var req pinChatRequest
+	if err := readJSON(r, &req); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	link, err := s.svc.PinPortalChat(r.Context(), r.PathValue("id"), req.DialogID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, newLinks([]domain.ChatLink{link})[0])
+}
+
+// unpinChat снимает чат с задачи.
+//
+// Номер приходит запросом, а не отрезком пути: у диалога он выглядит как
+// «chat28», и косая черта в пути с таким значением не встречается, но
+// закладывать это в маршрут значило бы полагаться на то, что портал никогда не
+// заведёт идентификатор с ней.
+func (s *Server) unpinChat(w http.ResponseWriter, r *http.Request) {
+	dialog := strings.TrimSpace(r.URL.Query().Get("dialog"))
+	if err := s.svc.UnpinChat(r.Context(), r.PathValue("id"), dialog); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) tasks(w http.ResponseWriter, r *http.Request) {
@@ -182,10 +226,13 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if portal.ID != "" {
 		_, err := s.svc.PinChat(ctx, domain.ChatLink{
-			TaskID:         t.ID,
-			System:         domain.SystemBitrix,
-			DialogID:       portal.DialogID(),
-			Title:          portal.Title,
+			TaskID:   t.ID,
+			System:   domain.SystemBitrix,
+			DialogID: portal.DialogID(),
+			Title:    portal.Title,
+			// Чат, пришедший из карточки задачи, — чат задачи по
+			// определению: спрашивать об этом портал незачем.
+			Kind:           domain.ChatTask,
 			ExternalTaskID: portal.ID,
 		})
 		if err != nil {

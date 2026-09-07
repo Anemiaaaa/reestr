@@ -1422,3 +1422,51 @@ h1 {
 .jr__acts { display: flex; gap: 10px; margin-top: 5px; }
 .jr__acts .linkish { margin-top: 0; font-size: 11.5px; }
 .linkish--drop { color: var(--red); }
+
+/* --- закреплённые чаты --- */
+
+/* Чатов у задачи бывает несколько: обсуждение ведут внутри, а с клиентом
+   говорят в контакт-центре, и обе переписки относятся к одной работе. Каждый
+   отдельной строкой, а не все через точку в абзац: строку, которую пора
+   открепить, надо уметь найти глазами. */
+.chats { display: grid; gap: 4px; margin: 12px 0 4px; }
+
+.chats__row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+  padding: 4px 0 4px 10px;
+  border-left: 2px solid var(--line-firm);
+}
+
+/* Переписка с клиентом отмечена цветом: в ней говорит клиент, и его слова весят
+   не столько же, сколько обсуждение между своими. */
+.chats__row--client { border-left-color: var(--blue); }
+
+.chats__kind {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+.chats__row--client .chats__kind { color: var(--blue); }
+
+.chats__title { color: var(--text); }
+.chats__note { color: var(--faint); }
+
+/* Кнопки строки видны по наведению: они нужны изредка, а «открепить» у каждой
+   строки разом читается как предложение открепить. */
+.chats__row .linkish { opacity: 0; margin-top: 0; font-size: 11.5px; }
+.chats__row:hover .linkish,
+.chats__row .linkish:focus-visible { opacity: 1; }
+
+.chats__add { margin-top: 2px; font-size: 12px; }
+
+@media (hover: none) {
+  .chats__row .linkish { opacity: 1; }
+}

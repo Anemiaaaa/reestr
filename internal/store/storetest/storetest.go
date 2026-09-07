@@ -255,6 +255,44 @@ func testChatLink(t *testing.T, st store.Store) {
 	if list, err := st.ChatLinks(ctx, "нет такой"); err != nil || len(list) != 0 {
 		t.Errorf("чаты неизвестной задачи: %d (%v)", len(list), err)
 	}
+
+	// Род чата хранится и возвращается: по dialog_id его не видно — и чат
+	// задачи, и открытая линия контакт-центра выглядят как «chat28», — а
+	// разница существенная: в открытой линии говорит клиент.
+	link(t, st, domain.ChatLink{
+		TaskID: "aura", System: domain.SystemBitrix, DialogID: "chat77",
+		Title: "Открытая линия: клиент", Kind: domain.ChatLines,
+	})
+	lines, err := st.ChatLinks(ctx, "aura")
+	if err != nil {
+		t.Fatalf("ChatLinks после открытой линии: %v", err)
+	}
+	if got := lines[len(lines)-1]; got.Kind != domain.ChatLines {
+		t.Errorf("род чата = %q, хотели %q", got.Kind, domain.ChatLines)
+	}
+	// У связей, заведённых без рода, он остаётся пустым, а не подставляется
+	// «обычным чатом»: сказать за них, что это было, нельзя.
+	if lines[1].Kind != "" {
+		t.Errorf("у связи без рода появился род %q", lines[1].Kind)
+	}
+
+	// Снятие чата с задачи. Изъятие здесь законно: связь не материал, а
+	// закладка, и «больше отсюда не читаем» — это не «этого не было».
+	if err := st.UnlinkChat(ctx, "aura", domain.SystemBitrix, "chat77"); err != nil {
+		t.Fatalf("UnlinkChat: %v", err)
+	}
+	if list, _ := st.ChatLinks(ctx, "aura"); len(list) != 2 {
+		t.Errorf("после снятия чатов %d, хотели 2", len(list))
+	}
+	// Тот же чат у другой задачи не задет: ключ связи включает задачу.
+	if list, _ := st.ChatLinks(ctx, "other"); len(list) != 1 {
+		t.Errorf("снятие задело чужую задачу: осталось %d", len(list))
+	}
+	// Снятие того, чего нет, — ErrNotFound, а не тихий успех: иначе опечатка в
+	// номере выглядела бы как удавшееся открепление.
+	if err := st.UnlinkChat(ctx, "aura", domain.SystemBitrix, "chat77"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("повторное снятие: ошибка %v, хотели ErrNotFound", err)
+	}
 }
 
 // testRawMessages: сообщение переносится как есть и принадлежит чату, а не

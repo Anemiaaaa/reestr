@@ -2,6 +2,9 @@ package bitrix
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/url"
 	"sort"
 	"strconv"
@@ -22,6 +25,13 @@ type Chat struct {
 	// служебные виды вроде «general».
 	Kind string
 
+	// Entity — что за сущностью стоит групповой чат: «LINES» у открытой линии
+	// контакт-центра, «TASKS» у чата задачи, пусто у обычного группового.
+	//
+	// По Kind этого не видно: и открытая линия, и чат задачи — «chat». А
+	// разница существенная: в открытой линии говорит клиент.
+	Entity string
+
 	// Bot отмечает диалог с ботом портала. Такие чаты в списке не нужны:
 	// обновлений по задаче в них не бывает.
 	Bot bool
@@ -41,6 +51,38 @@ func (c Chat) Group() bool { return strings.HasPrefix(c.DialogID, "chat") }
 
 // Selectable отсеивает то, что предлагать в списке не стоит.
 func (c Chat) Selectable() bool { return !c.Bot && c.DialogID != "" }
+
+// Lines отвечает, открытая ли это линия контакт-центра — та, где говорит
+// клиент.
+//
+// Сравнение без учёта регистра: портал отдаёт «LINES», но это его запись, а не
+// договор, и завязываться на её вид не стоит.
+func (c Chat) Lines() bool { return strings.EqualFold(c.Entity, "LINES") }
+
+// Kinded переводит чат портала в род, которым его помечает реестр.
+func (c Chat) Kinded() ChatKindHint {
+	switch {
+	case c.Lines():
+		return HintLines
+	case strings.EqualFold(c.Entity, "TASKS"):
+		return HintTask
+	case c.Group():
+		return HintGroup
+	}
+	return HintPrivate
+}
+
+// ChatKindHint — род чата в терминах портала. Отдельный тип, а не domain.ChatKind,
+// потому что пакет bitrix о домене реестра не знает и знать не должен: он
+// говорит на языке портала, а перевод делает тот, кто их сводит.
+type ChatKindHint string
+
+const (
+	HintLines   ChatKindHint = "lines"
+	HintTask    ChatKindHint = "task"
+	HintGroup   ChatKindHint = "chat"
+	HintPrivate ChatKindHint = "user"
+)
 
 // Chats отдаёт последние чаты пользователя, от которого выдан вебхук.
 //
@@ -149,6 +191,9 @@ func (it recentItem) chat() (Chat, bool) {
 	if it.User != nil {
 		ch.Bot = it.User.Bot || it.User.Type == "bot"
 	}
+	if it.Chat != nil {
+		ch.Entity = it.Chat.EntityType
+	}
 	return ch, true
 }
 
@@ -184,4 +229,85 @@ func preview(text string) string {
 		return s
 	}
 	return strings.TrimSpace(string(r[:max])) + "…"
+}
+
+// ErrChatNotFound — портал ответил, но такого чата у него нет или он недоступен
+// владельцу вебхука.
+//
+// Отдельно от *Error по той же причине, что и ErrTaskNotFound: *Error означает
+// «портал не смог», и транспорт переводит его в 502. Здесь портал сработал
+// исправно, а не сошлось названное человеком.
+var ErrChatNotFound = errors.New("чат не найден в портале")
+
+// Chat отдаёт один чат портала по идентификатору диалога.
+//
+// Метод нужен потому, что im.recent.list показывает только недавние чаты
+// владельца вебхука. Переписку контакт-центра ведут операторы, и в этот список
+// она попадает не всегда: в ней может не быть ни одного сообщения от владельца
+// вебхука. Тогда чат остаётся доступным для чтения, но выбрать его из списка
+// нельзя — и человек должен иметь возможность назвать его номером.
+//
+// Принимает и «chat28», и «28»: в адресной строке портала номер стоит без
+// приставки, и требовать её от человека, который копирует его глазами, значит
+// требовать помнить наше внутреннее соглашение.
+func (c *Client) Chat(ctx context.Context, dialogID string) (Chat, error) {
+	dialogID = strings.TrimSpace(dialogID)
+	if dialogID == "" {
+		return Chat{}, &Error{Code: "DIALOG_ID_EMPTY", Description: "не указан чат"}
+	}
+	if _, err := strconv.Atoi(dialogID); err == nil {
+		dialogID = "chat" + dialogID
+	}
+
+	var out chatEnvelope
+	params := url.Values{"DIALOG_ID": {dialogID}}
+	if err := c.Call(ctx, "im.chat.get", params, &out); err != nil {
+		return Chat{}, err
+	}
+
+	id := out.ID.string()
+	if id == "" {
+		return Chat{}, fmt.Errorf("%s: %w", dialogID, ErrChatNotFound)
+	}
+
+	n, _ := strconv.Atoi(id)
+	title := caption(out.Title)
+	if title == "" {
+		title = caption(out.Name)
+	}
+	if title == "" {
+		title = "Чат " + dialogID
+	}
+	return Chat{
+		DialogID: "chat" + id,
+		ChatID:   n,
+		Title:    title,
+		Kind:     "chat",
+		Entity:   out.EntityType,
+	}, nil
+}
+
+// chatEnvelope — ответ im.chat.get.
+//
+// Разбор терпимый по той же причине, что и у карточки задачи: у недоступного
+// чата портал отдаёт на месте результата пустой массив, а не объект. Обычная
+// структура на этом падает с ошибкой разбора, а ошибку разбора клиент считает
+// сбоем связи и повторяет запрос — опечатка в номере чата оборачивалась бы
+// тремя походами в портал вместо внятного «нет такого чата».
+type chatEnvelope struct {
+	ID         rawID  `json:"id"`
+	Title      string `json:"title"`
+	Name       string `json:"name"`
+	EntityType string `json:"entity_type"`
+}
+
+func (e *chatEnvelope) UnmarshalJSON(b []byte) error {
+	type plain chatEnvelope
+	var v plain
+	if err := json.Unmarshal(b, &v); err != nil {
+		*e = chatEnvelope{}
+		return nil
+	}
+	*e = chatEnvelope(v)
+	return nil
 }
