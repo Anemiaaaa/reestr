@@ -69,6 +69,10 @@ const state = {
   board: null,
   tab: "slice",
   journalTab: "rows",
+
+  // Выбранный отрезок журнала. Пустой означает «весь журнал» — законный вид, а
+  // не забытый фильтр.
+  period: {},
 };
 
 // --- значение с происхождением ---
@@ -1156,6 +1160,9 @@ function ask(title, fields, extra) {
       continue;
     } else if (f.kind === "select") {
       input = el("select", { id }, f.options.map(o => el("option", { value: o[0], text: o[1] })));
+      // Через свойство, а не через атрибут: выбранный пункт списка — это его
+      // состояние, и атрибут на самом select ничего не значит.
+      if (f.value !== undefined && f.value !== null) input.value = f.value;
     } else {
       input = el("input", { id, type: f.kind || "text", required: f.required, placeholder: f.hint, value: f.value });
     }
@@ -1527,11 +1534,32 @@ async function openJournal() {
   $("#main").replaceChildren(el("div", { class: "empty", text: "Загрузка…" }));
 
   try {
-    state.journal = await api("/api/incidents");
+    state.journal = await api("/api/incidents" + periodQuery());
     renderJournal();
   } catch (e) {
     $("#main").replaceChildren(el("div", { class: "empty" }, el("div", { class: "err", text: e.message })));
   }
+}
+
+// periodQuery — выбранный отрезок в виде запроса. Пустой означает «показать
+// всё»: это законный вид журнала, а не забытый фильтр.
+function periodQuery() {
+  const p = state.period;
+  const parts = [];
+  if (p.from) parts.push("from=" + encodeURIComponent(p.from));
+  if (p.to) parts.push("to=" + encodeURIComponent(p.to));
+  return parts.length ? "?" + parts.join("&") : "";
+}
+
+// month сдвигает выбранный отрезок на месяц: оценку ставят помесячно, и
+// набирать две даты руками ради «прошлый месяц» человек не должен.
+function setMonth(shift) {
+  const now = new Date();
+  const first = new Date(now.getFullYear(), now.getMonth() + shift, 1);
+  const last = new Date(now.getFullYear(), now.getMonth() + shift + 1, 0);
+  const iso = d => d.toISOString().slice(0, 10);
+  state.period = { from: iso(first), to: iso(last) };
+  openJournal();
 }
 
 function renderJournal() {
@@ -1544,6 +1572,7 @@ function renderJournal() {
     el("div", { class: "crumb" },
       "Основание для оценки: без зафиксированного случая KPI не снижается. " +
       "Оценку в процентах ставит руководитель — реестр хранит случаи."),
+    drawPeriod(j),
     el("div", { class: "actions" },
       el("button", {
         class: "btn btn--primary",
@@ -1551,19 +1580,87 @@ function renderJournal() {
         text: "Записать случай",
         onclick: addIncident,
       }),
+      el("a", {
+        class: "btn btn--link",
+        href: "/api/incidents.md" + periodQuery(),
+        text: "Выгрузить к разговору",
+      }),
       el("span", { class: "actions__note", text: j.text })));
 
   if (!j.incidents.length) {
-    page.append(el("div", { class: "empty", text: "Пока ни одного случая." }));
+    page.append(el("div", { class: "empty", text: state.period.from || state.period.to
+      ? "За этот отрезок записей нет." : "Пока ни одного случая." }));
     $("#main").replaceChildren(page);
     return;
   }
 
   page.append(...tabbed([
     ["rows", "Записи", j.incidents.length, () => journalTable(j.incidents)],
+    ["people", "По людям", j.people.length, () => journalPeople(j)],
     ["blocks", "По блокам KPI", null, () => journalBlocks(j)],
   ], "rows", "journalTab"));
   $("#main").replaceChildren(page);
+}
+
+// drawPeriod — выбор отрезка. Оценку ставят за месяц, и журнал целиком для
+// разговора не годится: к третьему месяцу в нём полсотни записей, из которых к
+// делу относится десяток.
+function drawPeriod(j) {
+  const box = el("div", { class: "period" });
+
+  const input = (name, label) => {
+    const el_ = el("input", { type: "date", value: state.period[name] || "" });
+    el_.addEventListener("change", () => {
+      state.period[name] = el_.value;
+      openJournal();
+    });
+    return el("label", { class: "period__field" },
+      el("span", { class: "period__label", text: label }), el_);
+  };
+
+  // Через put, а не через append: append превращает null в строку «null» и
+  // печатает её на экране, а необязательных кнопок здесь две.
+  put(box, [
+    el("button", { class: "btn btn--small", type: "button", text: "Этот месяц", onclick: () => setMonth(0) }),
+    el("button", { class: "btn btn--small", type: "button", text: "Прошлый месяц", onclick: () => setMonth(-1) }),
+    input("from", "с"),
+    input("to", "по"),
+    state.period.from || state.period.to
+      ? el("button", {
+        class: "btn btn--small", type: "button", text: "весь журнал",
+        onclick: () => { state.period = {}; openJournal(); },
+      })
+      : null,
+    j.periodText ? el("span", { class: "period__note", text: j.periodText }) : null,
+  ]);
+  return box;
+}
+
+// journalPeople — разрез по людям. Ради него журнал и ведут: оценку ставят
+// человеку за месяц, а записи лежат по дням и по проектам, и сложить их глазами
+// при полусотне строк нельзя.
+function journalPeople(j) {
+  const box = el("div", { class: "blocks" });
+  for (const p of j.people) {
+    // Эскалации названы рядом со счётом намеренно: без них разрез читался бы
+    // обвинительным списком, а половина записей объясняет срыв, а не обвиняет.
+    const counts = [p.countText, "в оценку идёт " + p.counted];
+    if (p.external) counts.push("вне зоны контроля " + p.external);
+    if (p.escalated) counts.push("сообщил сам " + p.escalated);
+
+    box.append(el("div", { class: "kpi" },
+      el("div", { class: "kpi__head" },
+        el("span", { class: "kpi__title", text: p.employee }),
+        el("span", { class: "kpi__count", text: counts.join(" · ") })),
+      bar(p.share),
+      (p.blocks || []).length
+        ? el("div", { class: "kpi__people", text: p.blocks.join(" · ") })
+        : null,
+      (p.projects || []).length
+        ? el("div", { class: "kpi__people", text: "проекты: " + p.projects.join(", ") })
+        : null));
+  }
+  return box;
 }
 
 // journalBlocks показывает, где случаи накопились.
@@ -1633,7 +1730,14 @@ function journalTable(incidents) {
         in_.note ? el("div", { class: "crumb", text: in_.note }) : null),
       el("td", { class: "jr__yn", text: in_.escalatedText }),
       el("td", { class: in_.managerNote ? null : "miss", text: in_.managerNote || "не разобрано" }),
-      el("td", { class: "jr__who", text: in_.recordedBy }));
+      el("td", { class: "jr__who" },
+        el("div", { text: in_.recordedBy }),
+        // Правка и удаление стоят у самой записи: искать их в отдельном меню
+        // ради опечатки в фамилии никто не станет, а запись с опечаткой хуже
+        // отсутствующей — спорить будут с ней, а не с делом.
+        el("div", { class: "jr__acts" },
+          el("button", { class: "linkish", type: "button", text: "поправить", onclick: () => editIncident(in_) }),
+          el("button", { class: "linkish linkish--drop", type: "button", text: "удалить", onclick: () => dropIncident(in_) }))));
   });
 
   return el("div", { class: "sheet" },
@@ -1642,46 +1746,96 @@ function journalTable(incidents) {
       el("tbody", {}, rows)));
 }
 
-async function addIncident() {
-  const j = state.journal;
+// Даты в форме — в том виде, в каком их ждёт поле ввода. В журнале они
+// показаны как 04.09.2026, а <input type=date> понимает только ISO.
+function isoDate(text) {
+  const m = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(text || "");
+  return m ? m[3] + "-" + m[2] + "-" + m[1] : "";
+}
+
+// incidentFields — форма случая. Одна на запись и на правку: разойдясь, они
+// дали бы журнал, в который нельзя внести то, что в нём уже лежит.
+function incidentFields(j, in_) {
+  const v = in_ || {};
   // Задача реестра необязательна: журнал ведут по всем работам сразу, а в
   // реестр заведены единицы. Пустой первый пункт — это «случай не в задаче
   // реестра», а не пропущенное поле.
   const tasks = [["", "— не в задаче реестра —"], ...state.tasks.map(t => [t.id, t.title])];
 
-  const got = await ask("Случай", [
-    { name: "at", label: "Дата", kind: "date", required: true, hint: "когда случилось" },
-    { name: "employee", label: "Специалист", required: true, hint: "кого касается" },
-    { name: "project", label: "Проект", required: true, hint: "работа, в которой это случилось" },
-    { name: "taskId", label: "Задача реестра", kind: "select", options: tasks },
+  return [
+    { name: "at", label: "Дата", kind: "date", required: true, hint: "когда случилось", value: isoDate(v.at) },
+    { name: "employee", label: "Специалист", required: true, hint: "кого касается", value: v.employee },
+    { name: "project", label: "Проект", required: true, hint: "работа, в которой это случилось", value: v.project },
+    { name: "taskId", label: "Задача реестра", kind: "select", options: tasks, value: v.taskId },
     // Ровно один блок: один случай не должен съедать несколько блоков сразу.
-    { name: "block", label: "Блок KPI", kind: "select", options: j.blocks.map(b => [b.value, b.label]) },
-    { name: "text", label: "Что произошло", kind: "text", required: true, hint: "факты и последствия, а не оценка" },
+    { name: "block", label: "Блок KPI", kind: "select", options: j.blocks.map(b => [b.value, b.label]), value: v.block },
+    { name: "text", label: "Что произошло", kind: "text", required: true, hint: "факты и последствия, а не оценка", value: v.text },
     {
       name: "control", label: "В зоне контроля специалиста", kind: "select",
       options: [["yes", "да"], ["no", "нет — помешал клиент или внешний фактор"]],
+      value: v.external ? "no" : "yes",
       note: "«Нет» оставит случай в журнале как объяснение, но в оценку он не пойдёт.",
     },
     {
       name: "escalated", label: "Была эскалация", kind: "select",
       options: [["", "нет"], ["yes", "да — сообщили наверх"]],
+      value: v.escalatedText && v.escalatedText !== "нет" ? "yes" : "",
       note: "Эскалация меняет знак случая: штрафуется не проблема, а молчание о ней.",
     },
     { name: "escalatedAt", label: "Когда эскалировано", kind: "date" },
-    { name: "managerNote", label: "Комментарий руководителя", kind: "text" },
-  ]);
+    { name: "managerNote", label: "Комментарий руководителя", kind: "text", value: v.managerNote },
+  ];
+}
+
+// incidentBody собирает тело запроса. Подпись «кто зафиксировал» не
+// отправляется ни при записи, ни при правке: её ставит сервер из пропуска.
+function incidentBody(got) {
+  return JSON.stringify({
+    ...got,
+    external: got.control === "no",
+    escalated: got.escalated === "yes",
+  });
+}
+
+async function addIncident() {
+  const got = await ask("Случай", incidentFields(state.journal, null));
   if (!got) return;
 
   try {
-    // Подпись «кто зафиксировал» не отправляем: её ставит сервер из пропуска.
-    await api("/api/incidents", {
-      method: "POST",
-      body: JSON.stringify({
-        ...got,
-        external: got.control === "no",
-        escalated: got.escalated === "yes",
-      }),
+    await api("/api/incidents", { method: "POST", body: incidentBody(got) });
+    await openJournal();
+  } catch (e) {
+    flash(e.message);
+  }
+}
+
+// editIncident правит запись журнала.
+//
+// Журнал — рабочий документ руководителя, а не летопись событий. Запись с
+// опечаткой в фамилии или с датой не того дня хуже отсутствующей: её показывают
+// человеку как основание, и спорить он будет с опечаткой, а не с делом.
+async function editIncident(in_) {
+  const got = await ask("Поправить случай", incidentFields(state.journal, in_));
+  if (!got) return;
+
+  try {
+    await api("/api/incidents/" + encodeURIComponent(in_.id), {
+      method: "PUT",
+      body: incidentBody(got),
     });
+    await openJournal();
+  } catch (e) {
+    flash(e.message);
+  }
+}
+
+// dropIncident убирает запись журнала.
+async function dropIncident(in_) {
+  const what = "Удалить запись от " + in_.at + " по «" + in_.employee + "»?";
+  if (!window.confirm(what + "\n\nОтменить это будет нельзя.")) return;
+
+  try {
+    await api("/api/incidents/" + encodeURIComponent(in_.id), { method: "DELETE" });
     await openJournal();
   } catch (e) {
     flash(e.message);

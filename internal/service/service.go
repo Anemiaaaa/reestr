@@ -955,6 +955,30 @@ func (s *Service) CompareVersions(ctx context.Context, taskID string, a, b int) 
 // KPI. Оценку в процентах ставит человек — она про меру, а мера машине не
 // видна.
 func (s *Service) AddIncident(ctx context.Context, in domain.Incident) (domain.Incident, error) {
+	if err := s.checkIncident(&in); err != nil {
+		return domain.Incident{}, err
+	}
+
+	if in.ID == "" {
+		in.ID = newID("i")
+	}
+	if in.CreatedAt.IsZero() {
+		in.CreatedAt = s.now()
+	}
+
+	if err := s.store.AddIncident(ctx, in); err != nil {
+		return domain.Incident{}, err
+	}
+	s.log.Info("случай записан",
+		"случай", in.ID, "сотрудник", in.Employee, "проект", in.Project, "блок", in.Block)
+	return in, nil
+}
+
+// checkIncident приводит запись в порядок и проверяет обязательное.
+//
+// Один набор правил на запись и на правку. Разойдясь, они дали бы журнал, в
+// который нельзя внести то, что в нём уже лежит, — или, хуже, наоборот.
+func (s *Service) checkIncident(in *domain.Incident) error {
 	in.Employee = strings.TrimSpace(in.Employee)
 	in.Project = strings.TrimSpace(in.Project)
 	in.TaskID = strings.TrimSpace(in.TaskID)
@@ -970,38 +994,25 @@ func (s *Service) AddIncident(ctx context.Context, in domain.Incident) (domain.I
 
 	switch {
 	case in.Employee == "":
-		return domain.Incident{}, fmt.Errorf("не указан сотрудник: %w", ErrInvalid)
+		return fmt.Errorf("не указан сотрудник: %w", ErrInvalid)
 	case in.Project == "":
 		// «Дата, задача, что произошло» — требование самой системы оплаты.
 		// Случай без работы, в которой он произошёл, специалисту нечем показать.
-		return domain.Incident{}, fmt.Errorf("не указан проект: %w", ErrInvalid)
+		return fmt.Errorf("не указан проект: %w", ErrInvalid)
 	case in.Text == "":
-		return domain.Incident{}, fmt.Errorf("не описано, что произошло: %w", ErrInvalid)
+		return fmt.Errorf("не описано, что произошло: %w", ErrInvalid)
 	case !in.Block.Valid():
 		// Ровно один блок из закрытого списка. Правило «не применяем двойное
 		// наказание» проверяемо только пока блок один и известен.
-		return domain.Incident{}, fmt.Errorf("не указан блок KPI: %w", ErrInvalid)
+		return fmt.Errorf("не указан блок KPI: %w", ErrInvalid)
+	case in.At.IsZero():
+		// Дата события не подставляется из даты внесения: случай могли
+		// зафиксировать через неделю, а относится он к своему дню.
+		// Незаполненная дата — пробел, который видно, а подставленная —
+		// выдуманное число.
+		return fmt.Errorf("не указана дата случая: %w", ErrInvalid)
 	}
-
-	if in.ID == "" {
-		in.ID = newID("i")
-	}
-	if in.CreatedAt.IsZero() {
-		in.CreatedAt = s.now()
-	}
-	// Дата события не подставляется из даты внесения: случай могли
-	// зафиксировать через неделю, а относится он к своему дню. Незаполненная
-	// дата — пробел, который видно, а подставленная — выдуманное число.
-	if in.At.IsZero() {
-		return domain.Incident{}, fmt.Errorf("не указана дата случая: %w", ErrInvalid)
-	}
-
-	if err := s.store.AddIncident(ctx, in); err != nil {
-		return domain.Incident{}, err
-	}
-	s.log.Info("случай записан",
-		"случай", in.ID, "сотрудник", in.Employee, "проект", in.Project, "блок", in.Block)
-	return in, nil
+	return nil
 }
 
 // Incidents возвращает журнал случаев, свежие первыми. Пустой taskID — по всем
@@ -1013,4 +1024,73 @@ func (s *Service) Incidents(ctx context.Context, taskID string) ([]domain.Incide
 		}
 	}
 	return s.store.Incidents(ctx, taskID)
+}
+
+// IncidentsIn возвращает случаи задачи за период, свежие первыми.
+//
+// Оценку ставят за месяц, и журнал целиком для этого не годится: к третьему
+// месяцу в нём будет полсотни записей, из которых к разговору относится
+// десяток. Границы включительные по дате события — «за сентябрь» значит с
+// первого по тридцатое, а не «по тридцатое ноль часов».
+func (s *Service) IncidentsIn(ctx context.Context, taskID string, from, to time.Time) ([]domain.Incident, error) {
+	all, err := s.Incidents(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if from.IsZero() && to.IsZero() {
+		return all, nil
+	}
+
+	out := make([]domain.Incident, 0, len(all))
+	for _, in := range all {
+		// Случай без даты не попадает ни в один период. Это не потеря: дата у
+		// случая обязательна, и запись без неё в журнал не вносилась.
+		if in.At.IsZero() {
+			continue
+		}
+		day := in.At.Truncate(24 * time.Hour)
+		if !from.IsZero() && day.Before(from.Truncate(24*time.Hour)) {
+			continue
+		}
+		if !to.IsZero() && day.After(to.Truncate(24*time.Hour)) {
+			continue
+		}
+		out = append(out, in)
+	}
+	return out, nil
+}
+
+// UpdateIncident переписывает запись журнала.
+//
+// Подпись и дата внесения не меняются: их ставил сервер при первой записи, и
+// правка не отменяет того, что случай зафиксировал такой-то тогда-то.
+func (s *Service) UpdateIncident(ctx context.Context, in domain.Incident) (domain.Incident, error) {
+	if strings.TrimSpace(in.ID) == "" {
+		return domain.Incident{}, fmt.Errorf("не указан случай: %w", ErrInvalid)
+	}
+	if err := s.checkIncident(&in); err != nil {
+		return domain.Incident{}, err
+	}
+	if err := s.store.UpdateIncident(ctx, in); err != nil {
+		return domain.Incident{}, err
+	}
+	s.log.Info("случай поправлен", "случай", in.ID, "сотрудник", in.Employee)
+	return in, nil
+}
+
+// DeleteIncident убирает запись журнала.
+//
+// Убирают, а не помечают отозванной, потому что журнал — рабочий документ
+// руководителя. Внесённая по ошибке запись не должна оставаться в нём вечным
+// напоминанием о промахе того, кто её внёс, — а к оценке она всё равно не
+// относится.
+func (s *Service) DeleteIncident(ctx context.Context, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("не указан случай: %w", ErrInvalid)
+	}
+	if err := s.store.DeleteIncident(ctx, id); err != nil {
+		return err
+	}
+	s.log.Info("случай удалён", "случай", id)
+	return nil
 }

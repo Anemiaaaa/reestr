@@ -211,6 +211,17 @@ type Store interface {
 	// «по всем задачам».
 	Incidents(ctx context.Context, taskID string) ([]domain.Incident, error)
 
+	// UpdateIncident переписывает запись журнала. Отсутствующая — ErrNotFound.
+	//
+	// Журнал — рабочий документ руководителя, а не летопись событий, и правка в
+	// нём законна. Запись с опечаткой в фамилии или с датой не того дня хуже
+	// отсутствующей: её показывают человеку как основание, и спорить он будет с
+	// опечаткой, а не с делом.
+	UpdateIncident(ctx context.Context, in domain.Incident) error
+
+	// DeleteIncident убирает запись журнала. Отсутствующая — ErrNotFound.
+	DeleteIncident(ctx context.Context, id string) error
+
 	// NextSliceVersion возвращает номер, который получит следующая сборка.
 	NextSliceVersion(ctx context.Context, taskID string) (int, error)
 }

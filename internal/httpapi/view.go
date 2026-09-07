@@ -1031,11 +1031,45 @@ type blockStat struct {
 	Note string `json:"note,omitempty"`
 }
 
+// personStat — что накопилось за период у одного человека.
+//
+// Ради этого разреза журнал и ведут: оценку ставят человеку за месяц, а записи
+// лежат по дням и по проектам. Сложить их глазами при полусотне строк нельзя.
+type personStat struct {
+	Employee string `json:"employee"`
+
+	// CountText — сколько случаев всего, со склонением; Counted — сколько из них
+	// идут в оценку. Разделены, потому что решение принимают по второму числу, а
+	// объясняют первым.
+	CountText string `json:"countText"`
+	Counted   int    `json:"counted"`
+	External  int    `json:"external"`
+
+	// Escalated — сколько раз человек сообщил о проблеме сам. Довод в его
+	// пользу: блок «эскалация и самостоятельность» штрафует не проблему, а
+	// молчание о ней, и без этого числа разрез читался бы как обвинительный.
+	Escalated int `json:"escalated"`
+
+	// Share — доля от самого нагруженного, для ширины полосы.
+	Share float64 `json:"share"`
+
+	// Blocks — по каким блокам KPI, крупные первыми.
+	Blocks []string `json:"blocks,omitempty"`
+
+	// Projects — в каких работах это случилось.
+	Projects []string `json:"projects,omitempty"`
+}
+
 // journal — ответ журнала целиком.
 type journal struct {
-	Incidents []incident  `json:"incidents"`
-	Blocks    []kpiBlock  `json:"blocks"`
-	Stats     []blockStat `json:"stats"`
+	Incidents []incident   `json:"incidents"`
+	Blocks    []kpiBlock   `json:"blocks"`
+	Stats     []blockStat  `json:"stats"`
+	People    []personStat `json:"people"`
+
+	// PeriodText — за какой отрезок собран журнал, словами. Пусто, если
+	// показывают всё.
+	PeriodText string `json:"periodText,omitempty"`
 
 	// Text — сводка одной строкой. Считается здесь, а не в браузере: правило
 	// «внешняя помеха в оценку не идёт» одно, и применять его в двух местах
@@ -1048,11 +1082,13 @@ type journal struct {
 	StatsText string `json:"statsText"`
 }
 
-func newJournal(list []domain.Incident, titles map[string]string) journal {
+func newJournal(list []domain.Incident, titles map[string]string, from, to time.Time) journal {
 	j := journal{
-		Incidents: newIncidents(list, titles),
-		Blocks:    newKPIBlocks(),
-		Stats:     newBlockStats(list),
+		Incidents:  newIncidents(list, titles),
+		Blocks:     newKPIBlocks(),
+		Stats:      newBlockStats(list),
+		People:     newPeopleStats(list),
+		PeriodText: periodText(from, to),
 	}
 
 	counted := 0
@@ -1179,4 +1215,98 @@ func topPeople(counts map[string]int) []string {
 		out = append(out, fmt.Sprintf("%s — %d", name, counts[name]))
 	}
 	return out
+}
+
+// newPeopleStats складывает случаи по людям, нагруженные первыми.
+//
+// Считается по зачтённым, а не по всем: решение об оценке принимают по ним.
+// Отведённые случаи и эскалации идут рядом отдельными числами — без них разрез
+// читался бы как обвинительный список, а половина записей в журнале объясняет
+// срыв, а не обвиняет.
+func newPeopleStats(list []domain.Incident) []personStat {
+	type tally struct {
+		all, counted, external, escalated int
+		blocks                            map[domain.KPIBlock]int
+		projects                          map[string]bool
+	}
+
+	byName := map[string]*tally{}
+	for _, in := range list {
+		t, ok := byName[in.Employee]
+		if !ok {
+			t = &tally{blocks: map[domain.KPIBlock]int{}, projects: map[string]bool{}}
+			byName[in.Employee] = t
+		}
+		t.all++
+		if in.Countable() {
+			t.counted++
+		} else {
+			t.external++
+		}
+		if in.Escalated {
+			t.escalated++
+		}
+		t.blocks[in.Block]++
+		if in.Project != "" {
+			t.projects[in.Project] = true
+		}
+	}
+
+	top := 0
+	for _, t := range byName {
+		if t.counted > top {
+			top = t.counted
+		}
+	}
+
+	out := make([]personStat, 0, len(byName))
+	for name, t := range byName {
+		s := personStat{
+			Employee:  name,
+			CountText: ru.Count(t.all, "случай", "случая", "случаев"),
+			Counted:   t.counted,
+			External:  t.external,
+			Escalated: t.escalated,
+		}
+		if top > 0 {
+			s.Share = float64(t.counted) / float64(top)
+		}
+		// Блоки идут в порядке системы оплаты, а не по счёту: он у них общий с
+		// весами, и «дисциплина 2, сроки 1» человек читает вместе с тем, что
+		// сроки весят тридцать процентов, а дисциплина двадцать.
+		for _, b := range domain.KPIBlocks() {
+			if n := t.blocks[b]; n > 0 {
+				s.Blocks = append(s.Blocks, fmt.Sprintf("%s — %d", b.Label(), n))
+			}
+		}
+		for p := range t.projects {
+			s.Projects = append(s.Projects, p)
+		}
+		sort.Strings(s.Projects)
+		out = append(out, s)
+	}
+
+	// Нагруженные первыми; при равном счёте — по имени, иначе порядок брался бы
+	// из обхода карты и менялся на каждом обновлении страницы.
+	sort.Slice(out, func(i, k int) bool {
+		if out[i].Counted != out[k].Counted {
+			return out[i].Counted > out[k].Counted
+		}
+		return out[i].Employee < out[k].Employee
+	})
+	return out
+}
+
+// periodText называет отрезок словами. Пусто означает «показываем всё» — тогда
+// и говорить не о чем.
+func periodText(from, to time.Time) string {
+	switch {
+	case from.IsZero() && to.IsZero():
+		return ""
+	case from.IsZero():
+		return "по " + domain.FormatDate(to)
+	case to.IsZero():
+		return "с " + domain.FormatDate(from)
+	}
+	return domain.FormatDate(from) + " — " + domain.FormatDate(to)
 }

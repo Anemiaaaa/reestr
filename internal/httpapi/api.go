@@ -72,6 +72,9 @@ func New(svc *service.Service, web fs.FS, log *slog.Logger, a *auth.Auth) *Serve
 	mux.HandleFunc("GET /api/tasks/{id}/facts", s.facts)
 	mux.HandleFunc("GET /api/incidents", s.incidents)
 	mux.HandleFunc("POST /api/incidents", s.addIncident)
+	mux.HandleFunc("GET /api/incidents.md", s.journalText)
+	mux.HandleFunc("PUT /api/incidents/{id}", s.updateIncident)
+	mux.HandleFunc("DELETE /api/incidents/{id}", s.deleteIncident)
 	mux.HandleFunc("GET /api/sources/{id}", s.source)
 	if web != nil {
 		mux.Handle("GET /", http.FileServerFS(web))
@@ -811,23 +814,151 @@ func (s *Server) incidents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	list, err := s.svc.Incidents(ctx, strings.TrimSpace(r.URL.Query().Get("task")))
+	from, to, err := period(r)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
 
-	tasks, err := s.svc.Tasks(ctx)
+	list, err := s.svc.IncidentsIn(ctx, strings.TrimSpace(r.URL.Query().Get("task")), from, to)
 	if err != nil {
 		s.fail(w, r, err)
 		return
+	}
+
+	titles, err := s.taskTitles(ctx)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newJournal(list, titles, from, to))
+}
+
+// period читает границы отрезка из запроса. Пустые — «показать всё».
+func period(r *http.Request) (time.Time, time.Time, error) {
+	read := func(key string) (time.Time, error) {
+		raw := strings.TrimSpace(r.URL.Query().Get(key))
+		if raw == "" {
+			return time.Time{}, nil
+		}
+		var d date
+		if err := d.UnmarshalJSON([]byte(strconv.Quote(raw))); err != nil {
+			return time.Time{}, fmt.Errorf("%s=%q: %w", key, raw, service.ErrInvalid)
+		}
+		return d.Time, nil
+	}
+
+	from, err := read("from")
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	to, err := read("to")
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	// Перепутанные местами границы — не ошибка ввода, а описка: «с десятого по
+	// первое» человек имел в виду наоборот. Меняем и работаем, а не отказываем.
+	if !from.IsZero() && !to.IsZero() && from.After(to) {
+		from, to = to, from
+	}
+	return from, to, nil
+}
+
+// taskTitles — справочник названий задач для подстановки в журнал.
+func (s *Server) taskTitles(ctx context.Context) (map[string]string, error) {
+	tasks, err := s.svc.Tasks(ctx)
+	if err != nil {
+		return nil, err
 	}
 	titles := make(map[string]string, len(tasks))
 	for _, t := range tasks {
 		titles[t.ID] = t.Title
 	}
+	return titles, nil
+}
 
-	writeJSON(w, http.StatusOK, newJournal(list, titles))
+// updateIncident переписывает запись журнала.
+func (s *Server) updateIncident(w http.ResponseWriter, r *http.Request) {
+	if !s.manager(r) {
+		s.forbid(w, r)
+		return
+	}
+
+	var req incidentRequest
+	if err := readJSON(r, &req); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	// Подпись и дата внесения сюда не приходят и не принимаются: их поставил
+	// сервер при первой записи, и правка не отменяет того, что случай
+	// зафиксировал такой-то тогда-то.
+	in, err := s.svc.UpdateIncident(r.Context(), domain.Incident{
+		ID:          r.PathValue("id"),
+		Employee:    req.Employee,
+		Project:     req.Project,
+		TaskID:      req.TaskID,
+		At:          req.At.Time,
+		Block:       domain.KPIBlock(req.Block),
+		Text:        req.Text,
+		External:    req.External,
+		Escalated:   req.Escalated,
+		EscalatedAt: req.EscalatedAt.Time,
+		ManagerNote: req.ManagerNote,
+	})
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newIncidents([]domain.Incident{in}, nil)[0])
+}
+
+// deleteIncident убирает запись журнала.
+func (s *Server) deleteIncident(w http.ResponseWriter, r *http.Request) {
+	if !s.manager(r) {
+		s.forbid(w, r)
+		return
+	}
+	if err := s.svc.DeleteIncident(r.Context(), r.PathValue("id")); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// journalText отдаёт журнал разметкой — то, с чем идут на разговор о KPI.
+func (s *Server) journalText(w http.ResponseWriter, r *http.Request) {
+	if !s.manager(r) {
+		s.forbid(w, r)
+		return
+	}
+
+	ctx := r.Context()
+	from, to, err := period(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	list, err := s.svc.IncidentsIn(ctx, strings.TrimSpace(r.URL.Query().Get("task")), from, to)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	titles, err := s.taskTitles(ctx)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	name := "Журнал инцидентов"
+	if p := periodText(from, to); p != "" {
+		name += " " + p
+	}
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.Header().Set("Content-Disposition",
+		"attachment; filename*=UTF-8''"+url.PathEscape(fileName(name)+".md"))
+	_, _ = io.WriteString(w, report.Journal(list, titles, periodText(from, to)))
 }
 
 func (s *Server) addIncident(w http.ResponseWriter, r *http.Request) {

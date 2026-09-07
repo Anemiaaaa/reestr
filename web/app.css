@@ -1381,3 +1381,44 @@ h1 {
 
   a[href]::after { content: ""; }
 }
+
+/* --- отрезок журнала --- */
+
+/* Оценку ставят за месяц, и журнал целиком для разговора не годится: к третьему
+   месяцу в нём полсотни записей, из которых к делу относится десяток. */
+.period {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.period__field { display: grid; gap: 3px; }
+
+.period__label {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.period input {
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-firm);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.period__note { font-size: 12.5px; color: var(--faint); align-self: center; }
+
+/* Правка и удаление записи — у самой записи. Искать их в отдельном меню ради
+   опечатки в фамилии никто не станет, а запись с опечаткой хуже отсутствующей:
+   спорить будут с ней, а не с делом. */
+.jr__acts { display: flex; gap: 10px; margin-top: 5px; }
+.jr__acts .linkish { margin-top: 0; font-size: 11.5px; }
+.linkish--drop { color: var(--red); }

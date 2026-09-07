@@ -871,6 +871,45 @@ func (s *Store) AddIncident(ctx context.Context, in domain.Incident) error {
 	return nil
 }
 
+func (s *Store) UpdateIncident(ctx context.Context, in domain.Incident) error {
+	if in.TaskID != "" {
+		if _, err := s.Task(ctx, in.TaskID); err != nil {
+			return err
+		}
+	}
+
+	// created_at не трогаем: правка не отменяет того, что случай зафиксировали
+	// тогда-то, и переписать эту дату значило бы задним числом сдвинуть саму
+	// фиксацию.
+	const q = `UPDATE incidents SET
+	             employee = $2, project = $3, task_id = $4, at = $5, block = $6,
+	             txt = $7, external = $8, escalated = $9, escalated_at = $10,
+	             manager_note = $11
+	           WHERE id = $1`
+
+	tag, err := s.pool.Exec(ctx, q, in.ID, in.Employee, in.Project, nullText(in.TaskID),
+		nullTime(in.At), string(in.Block), in.Text, in.External,
+		in.Escalated, nullTime(in.EscalatedAt), in.ManagerNote)
+	if err != nil {
+		return fmt.Errorf("правка случая %s: %w", in.ID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("случай %s: %w", in.ID, store.ErrNotFound)
+	}
+	return nil
+}
+
+func (s *Store) DeleteIncident(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM incidents WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("удаление случая %s: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("случай %s: %w", id, store.ErrNotFound)
+	}
+	return nil
+}
+
 // Incidents возвращает журнал: свежие случаи первыми. Пустой taskID означает
 // «все задачи».
 func (s *Store) Incidents(ctx context.Context, taskID string) ([]domain.Incident, error) {

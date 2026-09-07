@@ -1489,4 +1489,64 @@ func testIncidents(t *testing.T, st store.Store) {
 	if list, err := st.Incidents(ctx, "clean"); err != nil || len(list) != 0 {
 		t.Errorf("журнал чистой задачи: %d (%v)", len(list), err)
 	}
+
+	// Правка записи. Журнал — рабочий документ руководителя, и запись с
+	// опечаткой в фамилии хуже отсутствующей: её показывают человеку как
+	// основание, и спорить он будет с опечаткой, а не с делом.
+	fixed := want
+	fixed.Employee = "Кевин Джонсонов"
+	fixed.ManagerNote = "разобрали, повторов не было"
+	fixed.At = utc(2026, time.August, 11)
+	// Подпись и дата внесения приходят намеренно неверными: хранилище обязано
+	// оставить прежние — правка не отменяет того, что случай зафиксировал
+	// такой-то тогда-то.
+	fixed.RecordedBy = "кто-то другой"
+	fixed.CreatedAt = utc(2026, time.December, 31)
+
+	if err := st.UpdateIncident(ctx, fixed); err != nil {
+		t.Fatalf("UpdateIncident: %v", err)
+	}
+
+	after, err := st.Incidents(ctx, "aura")
+	if err != nil {
+		t.Fatalf("Incidents после правки: %v", err)
+	}
+	var edited domain.Incident
+	for _, in := range after {
+		if in.ID == want.ID {
+			edited = in
+		}
+	}
+	switch {
+	case edited.Employee != "Кевин Джонсонов":
+		t.Errorf("правка не сохранилась: %q", edited.Employee)
+	case edited.ManagerNote != "разобрали, повторов не было":
+		t.Errorf("комментарий руководителя = %q", edited.ManagerNote)
+	case !edited.At.Equal(utc(2026, time.August, 11)):
+		t.Errorf("дата события = %v", edited.At)
+	case edited.RecordedBy != want.RecordedBy:
+		t.Errorf("подпись переписана: %q, была %q", edited.RecordedBy, want.RecordedBy)
+	case !edited.CreatedAt.Equal(want.CreatedAt):
+		t.Errorf("дата внесения переписана: %v, была %v", edited.CreatedAt, want.CreatedAt)
+	}
+
+	// Правка несуществующей записи — ErrNotFound, а не тихое добавление: иначе
+	// опечатка в номере завела бы дубль вместо правки.
+	ghost := want
+	ghost.ID = "нет такого"
+	if err := st.UpdateIncident(ctx, ghost); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("правка несуществующей записи: ошибка %v, хотели ErrNotFound", err)
+	}
+
+	// Удаление записи. Внесённая по ошибке не должна оставаться в журнале
+	// вечным напоминанием о промахе того, кто её внёс.
+	if err := st.DeleteIncident(ctx, "i-4"); err != nil {
+		t.Fatalf("DeleteIncident: %v", err)
+	}
+	if list, _ := st.Incidents(ctx, ""); len(list) != 3 {
+		t.Errorf("после удаления случаев %d, хотели 3", len(list))
+	}
+	if err := st.DeleteIncident(ctx, "i-4"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("повторное удаление: ошибка %v, хотели ErrNotFound", err)
+	}
 }

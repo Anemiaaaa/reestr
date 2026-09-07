@@ -667,6 +667,42 @@ func (s *Store) AddIncident(ctx context.Context, in domain.Incident) error {
 	return s.persist()
 }
 
+func (s *Store) UpdateIncident(ctx context.Context, in domain.Incident) error {
+	if in.TaskID != "" {
+		if _, err := s.Task(ctx, in.TaskID); err != nil {
+			return err
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, existing := range s.st.Incidents {
+		if existing.ID == in.ID {
+			// Дата внесения и подпись остаются прежними: правка не отменяет
+			// того, что случай зафиксировал такой-то тогда-то, и переписать это
+			// значило бы задним числом сдвинуть саму фиксацию.
+			in.CreatedAt, in.RecordedBy = existing.CreatedAt, existing.RecordedBy
+			s.st.Incidents[i] = in
+			return s.persist()
+		}
+	}
+	return fmt.Errorf("случай %s: %w", in.ID, store.ErrNotFound)
+}
+
+func (s *Store) DeleteIncident(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, existing := range s.st.Incidents {
+		if existing.ID == id {
+			s.st.Incidents = append(s.st.Incidents[:i], s.st.Incidents[i+1:]...)
+			return s.persist()
+		}
+	}
+	return fmt.Errorf("случай %s: %w", id, store.ErrNotFound)
+}
+
 // Incidents возвращает журнал: свежие случаи первыми. Пустой taskID означает
 // «все задачи».
 func (s *Store) Incidents(_ context.Context, taskID string) ([]domain.Incident, error) {
