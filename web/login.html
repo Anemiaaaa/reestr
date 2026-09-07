@@ -18,6 +18,12 @@
     <label class="field__label" for="password">Пароль</label>
     <input id="password" name="password" type="password" autocomplete="current-password" required>
 
+    <label class="login__remember">
+      <input id="remember" type="checkbox" checked>
+      <span>Запомнить это устройство</span>
+    </label>
+    <div class="login__hint">На три месяца. Не отмечайте на чужом компьютере: в реестре лежат материалы заказчиков.</div>
+
     <div class="err" id="err" hidden></div>
     <button class="btn btn--primary btn--wide" id="submit" type="submit">Войти</button>
   </form>
@@ -44,6 +50,7 @@ form.addEventListener("submit", async ev => {
       body: JSON.stringify({
         login: document.getElementById("login").value,
         password: document.getElementById("password").value,
+        remember: document.getElementById("remember").checked,
       }),
     });
     if (res.ok) {

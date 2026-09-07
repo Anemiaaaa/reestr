@@ -8,6 +8,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -359,7 +361,12 @@ func logins(log *slog.Logger, addr string) (*auth.Auth, error) {
 		return nil, nil
 	}
 
-	a, err := auth.New(users, config.Env("REESTR_SECRET", ""))
+	secret, err := signingKey(log)
+	if err != nil {
+		return nil, err
+	}
+
+	a, err := auth.New(users, secret)
 	if err != nil {
 		return nil, fmt.Errorf("REESTR_USERS: %w", err)
 	}
@@ -406,4 +413,51 @@ func loopback(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// keyFile — где лежит ключ подписи пропусков, если его не задали настройкой.
+const keyFile = "data/session.key"
+
+// signingKey отдаёт ключ, которым подписываются пропуска.
+//
+// Раньше пустой REESTR_SECRET означал «случайный ключ при запуске», и это
+// выбивало всех вошедших при каждом перезапуске сервера. На боевом сервере
+// перезапуск редкость, а вот в работе он идёт по десять раз за день, и вход
+// приходилось набирать заново каждый раз. Просьба «запомнить меня» упиралась
+// именно в это: помнить было нечем.
+//
+// Поэтому ключ теперь заводится один раз и лежит рядом с данными. Настройка
+// по-прежнему сильнее файла: на сервере ключ задают окружением, и подхватывать
+// вместо него файл из рабочего каталога нельзя.
+//
+// Смена ключа — это выход со всех устройств разом. Другого способа отозвать
+// выданные пропуска у нас нет: они самодостаточны и не хранятся на сервере.
+func signingKey(log *slog.Logger) (string, error) {
+	if s := strings.TrimSpace(config.Env("REESTR_SECRET", "")); s != "" {
+		return s, nil
+	}
+
+	if b, err := os.ReadFile(keyFile); err == nil && len(strings.TrimSpace(string(b))) > 0 {
+		return strings.TrimSpace(string(b)), nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("чтение ключа подписи %s: %w", keyFile, err)
+	}
+
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("новый ключ подписи: %w", err)
+	}
+	key := hex.EncodeToString(raw)
+
+	if err := os.MkdirAll(filepath.Dir(keyFile), 0o755); err != nil {
+		return "", fmt.Errorf("каталог для ключа подписи: %w", err)
+	}
+	// 0600: ключ подписи — тот же пропуск. Прав на чтение у соседей по машине
+	// быть не должно, хотя на Windows это пожелание, а не запрет.
+	if err := os.WriteFile(keyFile, []byte(key), 0o600); err != nil {
+		return "", fmt.Errorf("запись ключа подписи %s: %w", keyFile, err)
+	}
+
+	log.Info("ключ подписи заведён, вход переживёт перезапуск", "файл", keyFile)
+	return key, nil
 }

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -70,7 +71,7 @@ func TestIssueAndVerify(t *testing.T) {
 	t.Parallel()
 
 	a := newAuth(t, pair)
-	token := a.Issue("kurban")
+	token := a.Issue("kurban", false)
 
 	login, ok := a.Verify(token)
 	if !ok || login != "kurban" {
@@ -103,7 +104,7 @@ func TestExpired(t *testing.T) {
 	t.Parallel()
 
 	a := newAuth(t, pair)
-	token := a.Issue("kurban")
+	token := a.Issue("kurban", false)
 
 	a.Clock(func() time.Time { return time.Now().Add(ttl + time.Minute) })
 	if _, ok := a.Verify(token); ok {
@@ -117,7 +118,7 @@ func TestRemovedUser(t *testing.T) {
 	t.Parallel()
 
 	a := newAuth(t, pair)
-	token := a.Issue("kurban")
+	token := a.Issue("kurban", false)
 
 	delete(a.users, "kurban")
 	if _, ok := a.Verify(token); ok {
@@ -130,7 +131,7 @@ func TestRemovedUser(t *testing.T) {
 func TestOtherSecret(t *testing.T) {
 	t.Parallel()
 
-	token := newAuth(t, pair).Issue("kurban")
+	token := newAuth(t, pair).Issue("kurban", false)
 
 	other, err := New(pair, "другой ключ")
 	if err != nil {
@@ -183,7 +184,7 @@ func TestEmptySecretStillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, ok := a.Verify(a.Issue("kurban")); !ok {
+	if _, ok := a.Verify(a.Issue("kurban", false)); !ok {
 		t.Error("со случайным ключом пропуск не работает")
 	}
 }
@@ -232,5 +233,65 @@ func TestManagers(t *testing.T) {
 	// Иначе журнал молча закрылся бы от всех, включая того, для кого он.
 	if err := a.Managers("курбан"); err == nil {
 		t.Error("руководитель без входа принят")
+	}
+}
+
+// TestRememberedPass: «запомнить это устройство» — пропуск на три месяца вместо
+// суток. Без него вход приходилось набирать заново каждый день, а после
+// перезапуска сервера — и вовсе каждый раз.
+func TestRememberedPass(t *testing.T) {
+	t.Parallel()
+
+	a := newAuth(t, pair)
+	now := time.Date(2026, time.September, 7, 10, 0, 0, 0, time.UTC)
+	a.Clock(func() time.Time { return now })
+
+	short := a.Issue("kurban", false)
+	long := a.Issue("kurban", true)
+
+	// Через двое суток обычный пропуск уже недействителен, а запомненный ещё
+	// работает: в этом вся его суть.
+	a.Clock(func() time.Time { return now.Add(48 * time.Hour) })
+	if _, ok := a.Verify(short); ok {
+		t.Error("обычный пропуск пережил свои сутки")
+	}
+	if _, ok := a.Verify(long); !ok {
+		t.Error("запомненный пропуск не дожил до второго дня")
+	}
+
+	// Но и он не вечен: через полгода вход нужно подтвердить заново.
+	a.Clock(func() time.Time { return now.Add(180 * 24 * time.Hour) })
+	if _, ok := a.Verify(long); ok {
+		t.Error("запомненный пропуск оказался бессрочным")
+	}
+
+	// Срок куки берётся из того же места, что и срок подписи: разойдясь, они
+	// дали бы куку, живущую дольше пропуска, и человек видел бы «вошёл»,
+	// получая отказы.
+	if Life(false) >= Life(true) {
+		t.Errorf("сроки перепутаны: обычный %v, запомненный %v", Life(false), Life(true))
+	}
+}
+
+// TestRememberedPassCannotBeForged: срок лежит в самом пропуске, но подписан
+// вместе с логином. Продлить себе доступ, поправив число, нельзя.
+func TestRememberedPassCannotBeForged(t *testing.T) {
+	t.Parallel()
+
+	a := newAuth(t, pair)
+	now := time.Date(2026, time.September, 7, 10, 0, 0, 0, time.UTC)
+	a.Clock(func() time.Time { return now })
+
+	parts := strings.Split(a.Issue("kurban", false), ".")
+	if len(parts) != 3 {
+		t.Fatalf("пропуск из %d частей", len(parts))
+	}
+	// Подставляем срок на год вперёд, подпись оставляем прежнюю.
+	forged := parts[0] + "." +
+		strconv.FormatInt(now.Add(365*24*time.Hour).Unix(), 10) + "." + parts[2]
+
+	a.Clock(func() time.Time { return now.Add(48 * time.Hour) })
+	if _, ok := a.Verify(forged); ok {
+		t.Error("подделанный срок принят")
 	}
 }

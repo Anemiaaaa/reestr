@@ -672,6 +672,27 @@ h1 {
 }
 .login input:focus { outline: 2px solid var(--blue); outline-offset: -1px; }
 
+/* Галочка «запомнить» набрана мельче полей: это уточнение к входу, а не ещё
+   одно обязательное поле. Отмечена по умолчанию — вход набирают на своём
+   компьютере в девяти случаях из десяти, — но предупреждение о чужом стоит
+   рядом, а не в справке. */
+.login__remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  margin-top: 4px;
+  cursor: pointer;
+}
+.login__remember input { width: auto; margin: 0; }
+
+.login__hint {
+  font-size: 11.5px;
+  color: var(--faint);
+  line-height: 1.45;
+  margin: -2px 0 2px 24px;
+}
+
 .login .btn { margin-top: 6px; }
 .login .err { margin: 0 0 4px; }
 

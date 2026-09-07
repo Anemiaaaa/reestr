@@ -1079,6 +1079,10 @@ func (s *Server) addIncident(w http.ResponseWriter, r *http.Request) {
 // --- вход ---
 
 type loginRequest struct {
+	// Remember — «это моё устройство»: пропуск живёт три месяца вместо суток.
+	// Спрашиваем, а не решаем за человека: за одним компьютером сидят каждый
+	// день, за другим — один раз, а в реестре лежат аудиты заказчиков.
+	Remember bool   `json:"remember"`
 	Login    string `json:"login"`
 	Password string `json:"password"`
 }
@@ -1107,8 +1111,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	setSession(w, r, s.auth.Issue(strings.TrimSpace(req.Login)))
-	s.log.Info("вход", "логин", req.Login)
+	setSession(w, r, s.auth.Issue(strings.TrimSpace(req.Login), req.Remember), auth.Life(req.Remember))
+	s.log.Info("вход", "логин", req.Login, "запомнить устройство", req.Remember)
 	writeJSON(w, http.StatusOK, map[string]string{"login": strings.TrimSpace(req.Login)})
 }
 

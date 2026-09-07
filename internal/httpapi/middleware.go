@@ -146,7 +146,11 @@ func withAuth(a *auth.Auth, next http.Handler) http.Handler {
 // отбрасывается, и локальный запуск перестал бы пускать внутрь; за адресом
 // смотрим по заголовку прокси, потому что до сервера доходит уже расшифрованный
 // запрос.
-func setSession(w http.ResponseWriter, r *http.Request, token string) {
+func setSession(w http.ResponseWriter, r *http.Request, token string, life time.Duration) {
+	// Срок куки берётся тот же, что у подписи, и приходит одним значением
+	// сверху. Свой срок здесь означал бы куку, живущую дольше пропуска: браузер
+	// считал бы вход целым, а сервер бы его не признавал — человек видел бы
+	// «вошёл» и получал отказы.
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
 		Value:    token,
@@ -154,7 +158,7 @@ func setSession(w http.ResponseWriter, r *http.Request, token string) {
 		HttpOnly: true,
 		Secure:   secure(r),
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int((24 * time.Hour).Seconds()),
+		MaxAge:   int(life.Seconds()),
 	})
 }
 
