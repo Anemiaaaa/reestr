@@ -13,6 +13,7 @@ package httpapi
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/Anemiaaaa/reestr/internal/bitrix"
@@ -792,7 +793,18 @@ type chatOptions struct {
 }
 
 func newChatOptions(configured bool, owner string, list []bitrix.Chat) chatOptions {
-	opts := chatOptions{Configured: configured, Chats: newChats(list)}
+	// В списке — только переписки с клиентами. Прикрепляют к задаче ради них:
+	// чат задачи приходит вместе с самой задачей портала, а внутренние
+	// обсуждения в срез идут редко и по одному. Остальные виды из портала никуда
+	// не делись — их берут полем «номер чата», и об этом говорит надпись.
+	client := make([]bitrix.Chat, 0, len(list))
+	for _, c := range list {
+		if chatKindOf(c).Client() {
+			client = append(client, c)
+		}
+	}
+
+	opts := chatOptions{Configured: configured, Chats: newChats(client)}
 
 	// Имя владельца вебхука в надписи — не вежливость, а диагноз. Портал
 	// отдаёт реестру переписку одного человека, и переписка контакт-центра у
@@ -811,9 +823,13 @@ func newChatOptions(configured bool, owner string, list []bitrix.Chat) chatOptio
 		opts.Note = "Bitrix24 не настроен: задача создастся без чата"
 	case len(list) == 0:
 		opts.Note = "портал не отдал ни одного чата " + whose
+	case len(client) == 0:
+		opts.Note = "среди чатов " + whose + " нет ни одной переписки с клиентом. " +
+			"Контакт-центр ведут операторы, и у каждого она своя"
 	default:
-		opts.Note = "портал показывает только последние чаты " + whose + ". " +
-			"Переписку контакт-центра, которую ведёт кто-то другой, он не отдаст даже по номеру"
+		opts.Note = ru.Count(len(client), "переписка", "переписки", "переписок") +
+			" с клиентами из " + strconv.Itoa(len(list)) + " чатов " + whose + ". " +
+			"Чат другого вида — полем ниже, по номеру"
 	}
 	return opts
 }
@@ -826,9 +842,12 @@ func newChats(list []bitrix.Chat) []chat {
 			DialogID: c.DialogID, Title: c.Title, Label: c.Title,
 			Kind: string(kind), KindLabel: kind.Label(), Client: kind.Client(),
 		}
-		// Род чата в подписи стоит первым: человек ищет в списке переписку с
-		// клиентом, а не чат с названием «Открытая линия 3».
-		v.Label = kind.Label() + " · " + v.Label
+		// Род чата в подписи — только у тех, кто не переписка с клиентом. Список
+		// закрепления состоит из них одних, и повторённое девять раз «переписка с
+		// клиентом» отнимало бы ширину у названия, ничего не различая.
+		if !kind.Client() {
+			v.Label = kind.Label() + " · " + v.Label
+		}
 		if !c.LastActivity.IsZero() {
 			v.Label += " · " + domain.FormatDate(c.LastActivity)
 		}

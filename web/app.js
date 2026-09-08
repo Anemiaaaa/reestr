@@ -399,7 +399,12 @@ function askRows(title, spec, rows, kinds, extra) {
 // Общая часть двух форм — одиночной и списочной. Третья кнопка появляется
 // только там, где ей есть что делать: «вернуть как было» у неправленого поля
 // предлагало бы отменить то, чего не было.
-function openModal(dlg, extra, collect) {
+function openModal(dlg, extra, collect, wide) {
+  // Ширину ставим на каждом открытии, а не только когда её просят: диалог в
+  // приложении один и тот же узел, и оставленный от прошлой формы класс растянул
+  // бы следующую — вопрос из двух строк в окне на девятьсот пикселей.
+  dlg.querySelector(".modal__box").classList.toggle("modal__box--wide", !!wide);
+
   const foot = dlg.querySelector(".modal__foot");
   const old = foot.querySelector(".modal__extra");
   if (old) old.remove();
@@ -558,25 +563,29 @@ function drawChats(list) {
 // Поэтому рядом со списком — поле для номера: его видно в адресной строке
 // портала, и это единственный надёжный путь.
 async function pinChat() {
-  let options = [["", "— выбрать из списка портала —"]];
+  let options = [];
   let note = "";
   try {
     const res = await api("/api/bitrix/chats");
     note = res.note || "";
-    options = options.concat(res.chats.map(c => [c.dialogId, c.label]));
+    options = res.chats.map(c => [c.dialogId, c.label]);
   } catch (e) {
     note = "список чатов не загрузился: " + e.message;
   }
 
   const got = await ask("Прикрепить чат", [
-    { name: "pick", label: "Чат портала", kind: "select", options, note },
+    {
+      name: "pick", label: "Переписка с клиентом", kind: "filter", options, note,
+      placeholder: "имя клиента или название линии",
+    },
     {
       name: "dialogId", label: "Или номер чата",
       hint: "например 28 или chat28",
-      note: "Номер виден в адресной строке портала. Пригодится, когда переписки " +
-        "контакт-центра нет в списке: в неё владелец вебхука мог ни разу не писать.",
+      note: "Номер виден в адресной строке портала. Так прикрепляют чат любого " +
+        "вида — обсуждение задачи, внутренний групповой — и переписку, которой " +
+        "нет в списке выше.",
     },
-  ]);
+  ], null, true);
   if (!got) return;
 
   // Набранный номер главнее выбранного из списка: если человек его напечатал,
@@ -1218,13 +1227,16 @@ async function open(id) {
 // --- диалог ---
 
 // ask показывает форму и возвращает значения полей либо null, если отменили.
-function ask(title, fields, extra) {
+function ask(title, fields, extra, wide) {
   const dlg = $("#modal");
   const body = $("#modal-body");
   $("#modal-title").textContent = title;
   body.replaceChildren();
 
   const inputs = {};
+  // focus — чем заменить поле, когда курсор ставится не в него самого:
+  // у списка с отбором это строка поиска над ним.
+  const focus = {};
   for (const f of fields) {
     const id = "field-" + f.name;
     let input;
@@ -1274,6 +1286,45 @@ function ask(title, fields, extra) {
       });
 
       inputs[f.name] = input;
+      focus[f.name] = search;
+      if (f.onChange) input.addEventListener("change", () => f.onChange(input.value, inputs));
+      body.append(el("div", { class: "field" },
+        el("label", { class: "field__label", for: id + "-q", text: f.label }),
+        search, input, hint));
+      continue;
+    } else if (f.kind === "filter") {
+      // Отбор идёт здесь, а не на портале, в отличие от kind: "search".
+      // Разница в размере списка: задач в портале десять тысяч и грузить их
+      // все незачем, а чатов он отдаёт полсотни, и они уже пришли. Поход в
+      // сеть на каждую букву ради отбора сорока строк был бы платой ни за что.
+      input = el("select", { id, size: f.size || 10, class: "field__list" },
+        f.options.map(o => el("option", { value: o[0], text: o[1] })));
+
+      const hint = el("div", { class: "field__hint", text: f.note || "" });
+      const search = el("input", {
+        id: id + "-q",
+        type: "search",
+        class: "field__search",
+        placeholder: f.placeholder || "часть названия",
+        // Enter здесь означает «отобрал», а не «сохранить»: отправка формы по
+        // нему потеряла бы остальные поля.
+        onkeydown: ev => { if (ev.key === "Enter") ev.preventDefault(); },
+        oninput: () => {
+          const q = search.value.trim().toLowerCase();
+          const found = q
+            ? f.options.filter(o => o[1].toLowerCase().includes(q))
+            : f.options;
+          input.replaceChildren(...found.map(o => el("option", { value: o[0], text: o[1] })));
+          // Пустой отбор объясняется словами: список, схлопнувшийся в ничто,
+          // человек читает как поломку, а не как «ничего не подошло».
+          hint.textContent = q
+            ? (found.length ? "подошло: " + found.length : "ничего не подошло")
+            : (f.note || "");
+        },
+      });
+
+      inputs[f.name] = input;
+      focus[f.name] = search;
       if (f.onChange) input.addEventListener("change", () => f.onChange(input.value, inputs));
       body.append(el("div", { class: "field" },
         el("label", { class: "field__label", for: id + "-q", text: f.label }),
@@ -1302,10 +1353,12 @@ function ask(title, fields, extra) {
     const out = {};
     for (const [name, input] of Object.entries(inputs)) out[name] = input.value.trim();
     return out;
-  });
+  }, wide);
 
-  const first = Object.values(inputs)[0];
-  if (first) first.focus();
+  // У поля с отбором курсор ставится в строку поиска, а не в сам список:
+  // человек открыл диалог, чтобы найти нужное, а не чтобы листать стрелками.
+  const [name, first] = Object.entries(inputs)[0] || [];
+  if (first) (focus[name] || first).focus();
   return answer;
 }
 
