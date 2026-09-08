@@ -202,6 +202,7 @@ type EditItem struct {
 	Met     bool   `json:"met,omitempty"`
 
 	Progress  float64 `json:"progress,omitempty"`
+	Weight    float64 `json:"weight,omitempty"`
 	Due       string  `json:"due,omitempty"`
 	DependsOn string  `json:"dependsOn,omitempty"`
 	Since     string  `json:"since,omitempty"`
@@ -278,6 +279,12 @@ func BuildCorrection(field string, in Edit, note string) (json.RawMessage, error
 				ID:       fmt.Sprintf("m%d", len(list)+1),
 				Title:    strings.TrimSpace(it.Text),
 				Progress: clampShare(it.Progress),
+			}
+			// Вес не обрезается сверху: «эта настройка в десять раз объёмнее
+			// звонка» — законное соотношение. Отрицательный значит «обычный»,
+			// как и ноль.
+			if it.Weight > 0 {
+				m.Weight = it.Weight
 			}
 			due, err := parseEditDate(it.Due, f.Label)
 			if err != nil {

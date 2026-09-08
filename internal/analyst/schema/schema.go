@@ -110,13 +110,20 @@ func Properties() map[string]any {
 						"посчитай, три из четырёх — 0.75. Не занижай на всякий случай — из этих " +
 						"долей программа считает готовность задачи, которую назовут заказчику.",
 				},
+				"weight": map[string]any{
+					"type": "number", "minimum": 0,
+					"description": "Объём этапа относительно других: 1 — обычный, 3 — втрое " +
+						"больше работы, 0.5 — вдвое меньше. Этапы почти никогда не равны, и " +
+						"готовность считается с этим весом: короткий урок не должен весить " +
+						"столько же, сколько настройка всех рабочих мест.",
+				},
 				"evidence": map[string]any{
 					"type":        "array",
 					"items":       map[string]any{"type": "string"},
 					"description": "Чем подтверждается выполнение.",
 				},
 			},
-			"required":             []string{"title", "progress"},
+			"required":             []string{"title", "progress", "weight"},
 			"additionalProperties": false,
 		}, "Этапы плана с их выполнением."),
 

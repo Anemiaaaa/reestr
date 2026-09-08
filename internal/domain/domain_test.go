@@ -152,9 +152,13 @@ func TestReadiness(t *testing.T) {
 		{Progress: 0}, {Progress: 0}, {Progress: 0}, {Progress: 0}, {Progress: 0},
 	}
 
-	share, done := Readiness(plan)
+	share, done, total := Readiness(plan)
 	if want := 2.4; math.Abs(done-want) > 1e-9 {
 		t.Errorf("сумма прогресса = %v, хотели %v", done, want)
+	}
+	// Этапы без веса считаются как прежде: весь объём равен их числу.
+	if want := 9.0; math.Abs(total-want) > 1e-9 {
+		t.Errorf("весь объём = %v, хотели %v", total, want)
 	}
 	if want := 2.4 / 9; math.Abs(share-want) > 1e-9 {
 		t.Errorf("доля = %v, хотели %v", share, want)
@@ -164,8 +168,49 @@ func TestReadiness(t *testing.T) {
 		t.Errorf("округлённая доля = %d, хотели 27", got)
 	}
 
-	if share, done := Readiness(nil); share != 0 || done != 0 {
-		t.Errorf("плана нет: (%v, %v), хотели (0, 0)", share, done)
+	if share, done, total := Readiness(nil); share != 0 || done != 0 || total != 0 {
+		t.Errorf("плана нет: (%v, %v, %v), хотели нули", share, done, total)
+	}
+}
+
+// TestReadinessWeighted: этапы редко равны по объёму, и среднее по ним занижает
+// готовность там, где объёмная часть уже закрыта. Ровно этот случай и был на
+// живой задаче: настройка всех рабочих мест сделана, остался короткий урок, а
+// среднее показывало половину.
+func TestReadinessWeighted(t *testing.T) {
+	plan := []Milestone{
+		{Progress: 1, Weight: 4},   // большая работа, закрыта
+		{Progress: 0, Weight: 0.5}, // мелочь, не начата
+	}
+
+	share, done, total := Readiness(plan)
+	switch {
+	case math.Abs(done-4) > 1e-9:
+		t.Errorf("закрытый объём = %v, хотели 4", done)
+	case math.Abs(total-4.5) > 1e-9:
+		t.Errorf("весь объём = %v, хотели 4,5", total)
+	case math.Abs(share-4.0/4.5) > 1e-9:
+		t.Errorf("доля = %v, хотели %v", share, 4.0/4.5)
+	}
+	// 89 %, а не 50 %: разница между «почти сделано» и «сделано наполовину» —
+	// это разный разговор с заказчиком.
+	if got := int(math.Round(share * 100)); got != 89 {
+		t.Errorf("округлённая доля = %d, хотели 89", got)
+	}
+
+	if !Weighted(plan) {
+		t.Error("разные веса не опознаны")
+	}
+	// Ноль и единица — одно и то же: план, где объём не проставлен, взвешенным
+	// не считается, и подпись под процентом остаётся прежней.
+	if Weighted([]Milestone{{Progress: 1}, {Weight: 1}}) {
+		t.Error("план без весов сочтён взвешенным")
+	}
+	if got := (Milestone{}).Load(); got != 1 {
+		t.Errorf("вес этапа без веса = %v, хотели 1", got)
+	}
+	if got := (Milestone{Weight: -3}).Load(); got != 1 {
+		t.Errorf("отрицательный вес = %v, хотели 1", got)
 	}
 }
 

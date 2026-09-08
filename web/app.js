@@ -210,6 +210,9 @@ const EDIT_ROWS = {
   milestones: [
     { name: "text", label: "Этап", kind: "line" },
     { name: "progress", label: "Готовность, %", kind: "percent" },
+    // Объём этапа относительно других. Пустое поле и «1» — одно и то же, и
+    // подпись говорит об этом: иначе оно читалось бы как обязательное.
+    { name: "weight", label: "Объём (1 — обычный)", kind: "number", step: "0.5" },
     { name: "due", label: "Срок", kind: "date" },
   ],
   blockers: [
@@ -262,7 +265,8 @@ function rowsOf(field, sl) {
       return sl.goal.criteria.map(c => ({ text: c.text, met: c.met, note: c.note || "" }));
     case "status.milestones":
       return sl.status.milestones.map(m => ({
-        text: m.title, progress: Math.round(m.share * 100), due: m.due || "",
+        text: m.title, progress: Math.round(m.share * 100),
+        weight: m.weight || 1, due: m.due || "",
       }));
     case "blockers":
       return sl.blockers.map(b => ({
@@ -347,6 +351,9 @@ function askRows(title, spec, rows, kinds, extra) {
         const type = f.kind === "date" ? "text" : (f.kind === "number" || f.kind === "percent" ? "number" : "text");
         input = el("input", {
           type,
+          // Шаг нужен дробным полям: у числового поля он по умолчанию единица,
+          // и браузер не принимает «0,5», молча отказываясь отправить форму.
+          step: f.step,
           // Дата вводится как в срезе — 04.09.2026. Родное поле даты браузера
           // показывает её в другом порядке, и человек, сверяясь с экраном,
           // печатал бы одно, а видел другое.
@@ -801,7 +808,14 @@ function drawStatus(sl) {
     el("div", { class: "steps" }, st.milestones.map(m =>
       el("div", { class: "step" },
         el("div", {},
-          el("div", { class: "step__title", text: m.title }),
+          el("div", { class: "step__title" },
+            m.title,
+            // Вес рядом с названием, а не отдельной колонкой: он есть не у
+            // всякого плана, и пустая колонка в остальных случаях спрашивала бы
+            // «а что тут должно быть».
+            m.weightText
+              ? el("span", { class: "step__weight", text: m.weightText, title: "объём этапа относительно других" })
+              : null),
           bar(m.share, true)),
         el("div", { class: m.overdueText ? "step__due step__due--late" : "step__due", text: m.overdueText || m.due || "" }),
         el("div", { class: m.done ? "step__pct step__pct--done" : "step__pct", text: m.progress }))))));
@@ -833,8 +847,11 @@ function drawTrouble(sl) {
       el("li", { class: "card" },
         el("div", { class: "card__top" },
           el("span", { class: "card__title", text: r.summary }),
-          r.impactText ? el("span", { class: "tag tag--amber", text: r.impactText }) : null,
-          r.spread ? el("span", { class: "card__meta", text: r.spread }) : null),
+          r.impactText ? el("span", { class: "tag tag--amber", text: r.impactText }) : null),
+        // «На что влияет» — отдельной строкой, а не в шапке карточки. В шапке
+        // это фраза в строку длиной, и она сплющивала название риска в колонку
+        // по слову на строку, сама уезжая за край карточки.
+        r.spread ? el("div", { class: "card__spread", text: r.spread }) : null,
         el("div", { class: "card__body" }, val(r.evidence)))))));
 
   return sec("4", "Блокеры и риски", null, kids);

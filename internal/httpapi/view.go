@@ -234,6 +234,13 @@ type milestone struct {
 	Done        bool     `json:"done"`
 	OverdueText string   `json:"overdueText,omitempty"`
 	Evidence    []string `json:"evidence,omitempty"`
+
+	// Weight — объём этапа относительно других, числом для формы правки.
+	Weight float64 `json:"weight"`
+
+	// WeightText — он же для показа. Пусто у обычного этапа: писать «×1» у
+	// каждой строки значит зашумлять план ради ничего.
+	WeightText string `json:"weightText,omitempty"`
 }
 
 // shift — перенос срока.
@@ -479,7 +486,7 @@ func newHead(sl domain.Slice, t domain.Task, now time.Time) head {
 	// Доля берётся из тех же этапов, из которых сервис собрал подпись
 	// «27 %»: полоса и подпись под ней не могут разойтись, потому что
 	// считаются одним и тем же кодом.
-	h.ReadinessShare, _ = domain.Readiness(sl.Status.Milestones)
+	h.ReadinessShare, _, _ = domain.Readiness(sl.Status.Milestones)
 
 	if card := newTask(t, now); card.Deadline != "" {
 		h.Deadline, h.DeadlineNote, h.Overdue = card.Deadline, card.DeadlineNote, card.Overdue
@@ -555,6 +562,12 @@ func newMilestones(list []domain.Milestone, now time.Time) []milestone {
 		}
 		if d := m.OverdueDays(now); d > 0 {
 			v.OverdueText = "просрочен на " + ru.Days(d)
+		}
+		// Вес показывается только там, где он не единица. План, в котором этапы
+		// равны, и не должен ничего говорить про веса: их там нет.
+		v.Weight = m.Load()
+		if v.Weight != 1 {
+			v.WeightText = "×" + ru.Fixed(v.Weight, 1)
 		}
 		out = append(out, v)
 	}

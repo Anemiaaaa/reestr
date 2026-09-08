@@ -288,11 +288,21 @@ func (c *checker) milestones(list []milestone) []domain.Milestone {
 			progress = 1
 		}
 
+		// Вес приводится так же терпимо, как доля: отрицательный и ноль означают
+		// «обычный этап». Верхнего предела нет намеренно — план из настройки
+		// десяти рабочих мест и одного звонка это честное соотношение, а не
+		// ошибка модели.
+		weight := it.Weight
+		if weight < 0 {
+			weight = 0
+		}
+
 		out = append(out, domain.Milestone{
 			ID:       fmt.Sprintf("m%d", i+1),
 			Title:    title,
 			Due:      due,
 			Progress: progress,
+			Weight:   weight,
 			Evidence: trimAll(it.Evidence),
 		})
 	}

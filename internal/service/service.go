@@ -773,7 +773,17 @@ func readiness(ms []domain.Milestone) domain.Value {
 	if len(ms) == 0 {
 		return domain.Missing("плана нет: этапы в источниках не найдены")
 	}
-	share, done := domain.Readiness(ms)
+	share, done, total := domain.Readiness(ms)
+
+	// Подпись обязана объяснять цифру, а не повторять её. При равных этапах
+	// объяснение — счёт этапов; при разных счёт этапов ничего не объясняет —
+	// «0,9 из 2 этапов» при 45 % и при 90 % выглядело бы одинаково, — и вместо
+	// него называется объём работы.
+	if domain.Weighted(ms) {
+		return domain.Computed(ru.Percent(share), fmt.Sprintf(
+			"%s из %s объёма плана закрыто; этапы разного размера, всего их %d",
+			ru.Fixed(done, 1), ru.Fixed(total, 1), len(ms)))
+	}
 	return domain.Computed(ru.Percent(share), fmt.Sprintf("%s из %s плана закрыто",
 		ru.Fixed(done, 1), ru.CountOf(len(ms), "этапа", "этапов")))
 }
