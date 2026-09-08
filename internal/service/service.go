@@ -522,6 +522,23 @@ func (s *Service) BlankSlice(ctx context.Context, taskID string) (domain.Slice, 
 // читается целиком. Поэтому срез собирается из всей накопленной истории задачи,
 // а не только из последнего разбора.
 func (s *Service) Rebuild(ctx context.Context, taskID string) (domain.Slice, error) {
+	return s.rebuild(ctx, taskID, false)
+}
+
+// Reanalyse разбирает задачу заново, даже если материал не менялся.
+//
+// Отдельно от Rebuild, потому что различаются они не поведением, а тем, кто
+// просит. Ночная пересборка идёт по всем задачам без спроса, и там пропуск
+// неизменившегося — главная защита счёта. Здесь кнопку нажал человек, и у него
+// есть причина, о которой реестр знать не может: правила разбора поменялись,
+// модель поменялась, прошлый ответ оказался неверным. Отвечать на это «материал
+// не менялся» значит отказывать в единственном действии, ради которого кнопка и
+// нужна, — и выглядит это как сломанная кнопка.
+func (s *Service) Reanalyse(ctx context.Context, taskID string) (domain.Slice, error) {
+	return s.rebuild(ctx, taskID, true)
+}
+
+func (s *Service) rebuild(ctx context.Context, taskID string, force bool) (domain.Slice, error) {
 	now := s.now()
 
 	task, err := s.store.Task(ctx, taskID)
@@ -549,7 +566,7 @@ func (s *Service) Rebuild(ctx context.Context, taskID string) (domain.Slice, err
 	// немного иначе, и «различие» находилось бы всегда.
 	latest, err := s.store.LatestSlice(ctx, taskID)
 	switch {
-	case err == nil && !materialChanged(sources, latest):
+	case err == nil && !force && !materialChanged(sources, latest):
 		s.log.Info("пересборка пропущена: материал не менялся",
 			"задача", taskID, "версия", latest.Version, "источников", len(sources))
 		return latest, ErrNoChanges
@@ -781,7 +798,7 @@ func readiness(ms []domain.Milestone) domain.Value {
 	// него называется объём работы.
 	if domain.Weighted(ms) {
 		return domain.Computed(ru.Percent(share), fmt.Sprintf(
-			"%s из %s объёма плана закрыто; этапы разного размера, всего их %d",
+			"закрыто %s из %s объёма работ; этапов %d, они разного размера",
 			ru.Fixed(done, 1), ru.Fixed(total, 1), len(ms)))
 	}
 	return domain.Computed(ru.Percent(share), fmt.Sprintf("%s из %s плана закрыто",

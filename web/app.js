@@ -1219,11 +1219,34 @@ function tabbed(panels, fallback, slot) {
   return [tabs, body];
 }
 
+// flash показывает ответ на действие.
+//
+// Плашка висит поверх страницы, а не вставляется в неё. Так было раньше, и это
+// оказалось молчанием: кнопки живут в правой колонке, читают срез с прокруткой,
+// и ответ, вставленный в начало страницы, появлялся выше видимой части. Человек
+// нажимал «Пересобрать», сервер отвечал «материал не менялся», а на экране не
+// менялось ничего — кнопка выглядела мёртвой.
+//
+// Ошибка не гаснет сама: её читают и по ней действуют. Остальное убирается
+// через несколько секунд, чтобы не копиться поверх среза.
 function flash(text, cls = "err") {
-  const page = $("#main .page");
-  if (!page) return;
-  const box = el("div", { class: cls, text });
-  page.insertBefore(box, page.children[2] || null);
+  let box = $("#flash");
+  if (!box) {
+    box = el("div", { class: "flash", id: "flash" });
+    document.body.append(box);
+  }
+
+  const note = el("div", {
+    class: "flash__note flash__note--" + cls,
+    text,
+    title: "Убрать сообщение",
+    onclick: ev => ev.currentTarget.remove(),
+  });
+  box.append(note);
+
+  if (cls !== "err") {
+    setTimeout(() => note.remove(), 6000);
+  }
 }
 
 async function open(id) {

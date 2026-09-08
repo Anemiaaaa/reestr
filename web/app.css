@@ -1521,3 +1521,39 @@ h1 {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* --- плашка ответа --- */
+
+/* Поверх страницы, а не в потоке. Кнопки живут в правой колонке, срез читают с
+   прокруткой, и сообщение, вставленное в начало страницы, оказывалось выше
+   видимой части: ответ был, а выглядело как «кнопка не работает». */
+.flash {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: grid;
+  gap: 8px;
+  width: max-content;
+  max-width: min(560px, 92vw);
+  pointer-events: none;
+}
+
+.flash__note {
+  pointer-events: auto;
+  cursor: pointer;
+  padding: 9px 14px;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.4;
+  box-shadow: 0 4px 16px rgba(15, 15, 15, .14);
+  animation: appear .18s ease-out;
+}
+.flash__note--done { background: var(--green-bg); color: #2f5c43; }
+.flash__note--warn { background: var(--amber-bg); color: #7a5a13; }
+.flash__note--err { background: var(--red-bg); color: #8c2f2b; }
+
+@media print {
+  .flash { display: none; }
+}

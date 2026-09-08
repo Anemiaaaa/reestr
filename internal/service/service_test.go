@@ -934,3 +934,33 @@ func TestCorrectedMilestonesRecountReadiness(t *testing.T) {
 		t.Errorf("происхождение готовности %q, хотели computed", fixed.Status.Readiness.Origin)
 	}
 }
+
+// TestReanalyseIgnoresUnchangedMaterial: кнопку «пересобрать» нажимает человек,
+// и у него есть причина, о которой реестр знать не может, — поменялись правила
+// разбора, поменялась модель, прошлый ответ оказался неверным. Отказ «материал
+// не менялся» выглядит как сломанная кнопка.
+//
+// Ночная пересборка при этом обязана продолжать пропускать неизменившееся: она
+// идёт по всем задачам без спроса, и защищать счёт нужно там.
+func TestReanalyseIgnoresUnchangedMaterial(t *testing.T) {
+	s := seeded(t)
+	ctx := context.Background()
+
+	first, err := s.Slice(ctx, manual.TaskID)
+	if err != nil {
+		t.Fatalf("первая сборка: %v", err)
+	}
+
+	// Материал не тронут: обычная пересборка отказывается.
+	if _, err := s.Rebuild(ctx, manual.TaskID); !errors.Is(err, ErrNoChanges) {
+		t.Fatalf("Rebuild: ошибка %v, хотели ErrNoChanges", err)
+	}
+
+	again, err := s.Reanalyse(ctx, manual.TaskID)
+	if err != nil {
+		t.Fatalf("Reanalyse: %v", err)
+	}
+	if again.Version != first.Version+1 {
+		t.Errorf("версия %d, хотели %d", again.Version, first.Version+1)
+	}
+}

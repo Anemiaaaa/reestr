@@ -422,7 +422,12 @@ func (s *Server) slice(w http.ResponseWriter, r *http.Request) {
 // молча заводила новую версию при любом нажатии, и история заполнялась
 // одинаковыми записями.
 func (s *Server) rebuild(w http.ResponseWriter, r *http.Request) {
-	sl, err := s.svc.Rebuild(r.Context(), r.PathValue("id"))
+	// Reanalyse, а не Rebuild: кнопку нажал человек, и разбор должен состояться.
+	// Пропуск неизменившегося остаётся у ночной пересборки — она идёт по всем
+	// задачам без спроса, и защищать счёт нужно там. Ветка ErrNoChanges ниже
+	// сохранена намеренно: это ответ службы, а не эта кнопка решает, бывает он
+	// или нет.
+	sl, err := s.svc.Reanalyse(r.Context(), r.PathValue("id"))
 
 	switch {
 	case errors.Is(err, service.ErrNoChanges):
