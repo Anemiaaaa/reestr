@@ -2,6 +2,8 @@ package bitrix
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/url"
 	"sort"
 	"strconv"
@@ -72,6 +74,14 @@ func (c *Client) Messages(ctx context.Context, dialogID string, sinceID, limit i
 		Files    []map[string]any `json:"files"`
 	}
 	if err := c.Call(ctx, "im.dialog.messages.get", params, &out); err != nil {
+		// Отказ в доступе переводим так же, как при чтении карточки чата: это не
+		// сбой портала, а закрытая для владельца вебхука переписка. Разница
+		// видна вызывающему — подтяжка остальных чатов задачи из-за одного
+		// закрытого останавливаться не должна.
+		var pe *Error
+		if errors.As(err, &pe) && strings.EqualFold(pe.Code, "ACCESS_ERROR") {
+			return nil, fmt.Errorf("%s: %w", dialogID, ErrChatForbidden)
+		}
 		return nil, err
 	}
 

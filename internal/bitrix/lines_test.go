@@ -223,3 +223,27 @@ func TestDialogID(t *testing.T) {
 		}
 	}
 }
+
+// TestMessagesForbidden: закрытый чат при чтении сообщений отвечает так же, как
+// при чтении карточки, и переводиться должен так же.
+//
+// Разница видна не здесь, а в подтяжке: одна закрытая переписка не должна
+// останавливать чтение остальных чатов задачи. Пока отказ приходил обычной
+// ошибкой портала, чат задачи, в который человека не добавили, отменял и
+// подтяжку открытой линии.
+func TestMessagesForbidden(t *testing.T) {
+	t.Parallel()
+
+	c := serve(t, func(string, url.Values) (int, string) {
+		return http.StatusForbidden,
+			`{"error":"ACCESS_ERROR","error_description":"You do not have access to the specified dialog"}`
+	})
+
+	_, err := c.Messages(context.Background(), "chat33460", 0, 0)
+	if !errors.Is(err, ErrChatForbidden) {
+		t.Fatalf("ошибка %v, хотели ErrChatForbidden", err)
+	}
+	if !strings.Contains(err.Error(), "chat33460") {
+		t.Errorf("в ошибке нет номера чата: %v", err)
+	}
+}

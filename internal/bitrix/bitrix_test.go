@@ -234,6 +234,12 @@ func TestMessagesCursor(t *testing.T) {
 	}
 }
 
+// TestErrorEnvelope проверяет разбор конверта с ошибкой на списке чатов.
+//
+// Не на сообщениях, хотя раньше было на них: чтение чата переводит ACCESS_ERROR
+// в ErrChatForbidden намеренно — см. TestMessagesForbidden. А конверт как
+// таковой разбирается одинаково для всех методов, и проверять его надо там, где
+// над ним ничего не надстроено.
 func TestErrorEnvelope(t *testing.T) {
 	calls := 0
 	c := serve(t, func(_ string, _ url.Values) (int, string) {
@@ -241,7 +247,7 @@ func TestErrorEnvelope(t *testing.T) {
 		return http.StatusForbidden, `{"error":"ACCESS_ERROR","error_description":"You do not have access to the specified dialog"}`
 	})
 
-	_, err := c.Messages(context.Background(), "chat999", 0, 0)
+	_, err := c.Chats(context.Background(), 0)
 	if err == nil {
 		t.Fatal("ожидалась ошибка доступа")
 	}

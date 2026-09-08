@@ -1397,7 +1397,9 @@ async function pull(btn) {
     // стёр бы сообщение, вставленное до него.
     done();
     await open(state.current);
-    flash(res.text, res.added ? "done" : "warn");
+    // Закрытый чат перевешивает перенесённые сообщения: зелёное «перенесено 4»
+    // читается как «всё прочитано», а прочитано было не всё.
+    flash(res.text, res.added && !res.trouble ? "done" : "warn");
   } catch (e) {
     done();
     flash(e.message);
