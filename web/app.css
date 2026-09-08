@@ -113,7 +113,7 @@ body {
    таблицы и заголовок страницы с места не съезжает. */
 .page--wide { max-width: none; padding: 44px 32px 120px; }
 
-.crumb { font-size: 12.5px; color: var(--faint); line-height: 1.45; }
+.crumb { font-size: 13.5px; color: var(--faint); line-height: 1.45; }
 
 h1 {
   font-size: 29px;
@@ -174,7 +174,7 @@ h1 {
   display: flex;
   align-items: baseline;
   gap: 9px;
-  font-size: 13.5px;
+  font-size: 14.5px;
   padding: 5px 0 5px 12px;
   border-left: 2px solid var(--amber);
   color: var(--text);
@@ -225,8 +225,8 @@ h1 {
   min-width: 12px;
   text-align: right;
 }
-.sec__title { font-size: 18px; font-weight: 600; letter-spacing: -.01em; }
-.sec__note { font-size: 12.5px; color: var(--faint); margin-left: auto; }
+.sec__title { font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
+.sec__note { font-size: 13px; color: var(--faint); margin-left: auto; }
 
 /* --- поля --- */
 
@@ -244,9 +244,9 @@ h1 {
 }
 .row:last-child { border-bottom: 0; }
 
-.row__label { font-size: 13px; color: var(--muted); padding-top: 1px; }
+.row__label { font-size: 14px; color: var(--muted); padding-top: 1px; }
 .row__value {
-  font-size: 14.5px;
+  font-size: 16px;
   min-width: 0;
   /* Строка длиннее семидесяти знаков читается тяжело: глаз теряет начало
      следующей. Значения бывают в абзац, и ширину им стоит ограничить. */
@@ -279,10 +279,11 @@ h1 {
   border-left: 2px solid var(--line-firm);
   background: var(--panel);
   border-radius: 0 4px 4px 0;
-  font-size: 12.5px;
+  font-size: 13.5px;
+  line-height: 1.5;
   color: var(--muted);
 }
-.quote__src { display: block; color: var(--faint); font-size: 11.5px; margin-bottom: 3px; }
+.quote__src { display: block; color: var(--faint); font-size: 12.5px; margin-bottom: 3px; }
 .quote__note { display: block; margin-top: 5px; color: var(--text); }
 .quote[hidden] { display: none; }
 
@@ -297,9 +298,9 @@ h1 {
 }
 .card--warn { border-color: rgba(212, 76, 71, .32); background: var(--red-bg); }
 .card__top { display: flex; align-items: baseline; gap: 9px; }
-.card__title { font-size: 14px; font-weight: 500; }
-.card__meta { font-size: 12px; color: var(--muted); margin-left: auto; flex: none; }
-.card__body { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.card__title { font-size: 15px; font-weight: 500; }
+.card__meta { font-size: 13px; color: var(--muted); margin-left: auto; flex: none; }
+.card__body { font-size: 14.5px; line-height: 1.5; color: var(--muted); margin-top: 4px; }
 
 .tag {
   font-size: 11px;
@@ -315,10 +316,10 @@ h1 {
 .tag--blue { background: var(--blue-bg); color: #1a6b95; }
 
 .ticks { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-.tick { display: grid; grid-template-columns: 20px 1fr; gap: 8px; font-size: 14px; }
-.tick__box { color: var(--faint); font-size: 13px; }
+.tick { display: grid; grid-template-columns: 20px 1fr; gap: 9px; font-size: 15.5px; line-height: 1.5; }
+.tick__box { color: var(--faint); font-size: 14px; }
 .tick__box--met { color: var(--green); }
-.tick__note { font-size: 12.5px; color: var(--faint); margin-top: 2px; }
+.tick__note { font-size: 13.5px; color: var(--faint); margin-top: 2px; }
 
 /* --- этапы --- */
 
@@ -333,8 +334,8 @@ h1 {
   border-bottom: 1px solid var(--line);
 }
 .step:last-child { border-bottom: 0; }
-.step__title { font-size: 13.5px; }
-.step__due { font-size: 12px; color: var(--faint); text-align: right; }
+.step__title { font-size: 15px; line-height: 1.4; }
+.step__due { font-size: 13px; color: var(--faint); text-align: right; }
 .step__due--late { color: var(--red); }
 .step__pct {
   font-size: 12.5px;
@@ -1036,7 +1037,7 @@ h1 {
 .tick { padding: 4px 0; align-items: baseline; }
 .tick__box { font-size: 14px; }
 .tick--met .tick__text { color: var(--muted); }
-.tick__text { line-height: 1.45; }
+.tick__text { line-height: 1.5; }
 
 /* Номер критерия — отдельной колонкой. Приклеенный к тексту, он ломал выключку:
    вторая строка длинного критерия начиналась под цифрой, а не под словом. */

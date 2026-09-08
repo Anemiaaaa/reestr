@@ -13,6 +13,7 @@ import (
 	"github.com/Anemiaaaa/reestr/internal/analyst"
 	"github.com/Anemiaaaa/reestr/internal/analyst/manual"
 	"github.com/Anemiaaaa/reestr/internal/domain"
+	"github.com/Anemiaaaa/reestr/internal/ru"
 	"github.com/Anemiaaaa/reestr/internal/store"
 	"github.com/Anemiaaaa/reestr/internal/store/jsonstore"
 )
@@ -882,4 +883,54 @@ func (refusingAnalyst) Name() string { return "отказной разбор" }
 
 func (refusingAnalyst) Extract(context.Context, analyst.Input) (analyst.Output, error) {
 	return analyst.Output{}, errors.New("нет источников для разбора")
+}
+
+// TestCorrectedMilestonesRecountReadiness: поправив этапы, человек меняет и
+// готовность. Иначе процент над планом и сам план разошлись бы прямо на экране
+// — ровно то расхождение, ради которого готовность считает программа, а не
+// модель.
+func TestCorrectedMilestonesRecountReadiness(t *testing.T) {
+	s := seeded(t)
+	ctx := context.Background()
+
+	tasks, err := s.Tasks(ctx)
+	if err != nil || len(tasks) == 0 {
+		t.Fatalf("задачи: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	before, err := s.Slice(ctx, taskID)
+	if err != nil {
+		t.Fatalf("срез: %v", err)
+	}
+	if len(before.Status.Milestones) == 0 {
+		t.Fatal("в посеянном срезе нет этапов")
+	}
+
+	// Два этапа, закрытых наполовину и на три четверти: 62,5 %, округляется до
+	// 63 %. Числа выбраны так, чтобы совпасть с прежним значением было нельзя.
+	fixed, err := s.Correct(ctx, taskID, "status.milestones", domain.Edit{
+		Items: []domain.EditItem{
+			{Text: "Первый этап", Progress: 0.5},
+			{Text: "Второй этап", Progress: 0.75},
+		},
+	}, "проверка")
+	if err != nil {
+		t.Fatalf("правка этапов: %v", err)
+	}
+
+	if got := len(fixed.Status.Milestones); got != 2 {
+		t.Fatalf("этапов после правки %d, хотели 2", got)
+	}
+	// Ожидание берётся у того же форматировщика, что и значение: процент
+	// печатается с неразрывным пробелом, и повторять это в литерале теста значит
+	// заводить второе место, где формат может разойтись.
+	if want := ru.Percent(0.625); fixed.Status.Readiness.Text != want {
+		t.Errorf("готовность %q, хотели %q", fixed.Status.Readiness.Text, want)
+	}
+	// Происхождение остаётся расчётом: процент по-прежнему пересчитывается из
+	// плана, а не объявляется человеком.
+	if fixed.Status.Readiness.Origin != domain.OriginComputed {
+		t.Errorf("происхождение готовности %q, хотели computed", fixed.Status.Readiness.Origin)
+	}
 }

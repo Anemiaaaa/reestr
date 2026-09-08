@@ -869,6 +869,9 @@ func (s *Service) Correct(ctx context.Context, taskID, field string, in domain.E
 	if err := sl.Apply(c); err != nil {
 		return domain.Slice{}, fmt.Errorf("%w: %w", err, ErrInvalid)
 	}
+	if f.Kind == domain.EditMilestones {
+		recount(&sl)
+	}
 	if err := s.saveEdited(ctx, &sl, version, now, author); err != nil {
 		return domain.Slice{}, err
 	}
@@ -1006,12 +1009,35 @@ func editNote(author string, now time.Time) string {
 // уронить из-за неё весь срез значило бы сделать задачу неоткрываемой. В журнал
 // такое попадает предупреждением — чинить это всё равно человеку.
 func applyCorrections(sl *domain.Slice, list []domain.Correction, log *slog.Logger) {
-	for _, c := range domain.LatestCorrections(list) {
+	fixed := domain.LatestCorrections(list)
+	for _, c := range fixed {
 		if err := sl.Apply(c); err != nil {
 			log.Warn("правка не наложилась",
 				"задача", sl.TaskID, "поле", c.Field, "причина", err)
 		}
 	}
+
+	// Готовность пересчитывается после правки этапов, а не остаётся прежней.
+	//
+	// Иначе поправленный план и процент над ним расходились бы прямо на экране:
+	// человек ставит этапам 90 и 60, а в сводке по-прежнему 45 — ровно то
+	// расхождение, ради которого готовность вообще считается программой, а не
+	// берётся у модели. Правится тут именно план: сам процент в списке правимых
+	// полей не значится, и это намеренно — спор с заказчиком идёт о числе, и оно
+	// обязано пересчитываться из того, что под ним написано.
+	if _, ok := fixed["status.milestones"]; ok {
+		recount(sl)
+	}
+}
+
+// recount пересчитывает то, что зависит от поправленного плана.
+//
+// Пока это одна готовность, и функция всё равно отдельная: правка накладывается
+// в двух местах — при самой правке и при сборке среза с уже накопленными
+// правками, — и пересчёт, написанный в одном из них, рано или поздно разошёлся
+// бы со вторым.
+func recount(sl *domain.Slice) {
+	sl.Status.Readiness = readiness(sl.Status.Milestones)
 }
 
 // lastBuilt находит последнюю версию, собранную разбором, а не правкой.
